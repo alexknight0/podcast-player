@@ -30,7 +30,7 @@ const ID3 = (() => {
 
   // Fetch n bytes starting at `start`. Also returns the final URL after redirects.
   async function fetchRange(url, start, n, signal) {
-    const resp = await fetch(url, { headers: { Range: `bytes=${start}-${start + n - 1}` }, signal });
+    const resp = await fetch(url, { headers: { Range: `bytes=${start}-${start + n - 1}` }, cache: "no-store", signal });
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     // A server that ignores Range (200) would send the file from byte 0.
     if (resp.status !== 206 && start > 0) throw new Error("server ignored Range request");

@@ -319,6 +319,7 @@ async function loadChapters(ep) {
   // Shows without chapters only need the ID3 tag size (for ad maps) before detectAds.
   if (!SHOWS[ep.show].chapters) {
     if (SHOWS[ep.show].admaps) {
+      Ads.prefetchMap(ep.guid); // in parallel with the redirects below
       try {
         const info = await ID3.readTagSize(ep.url, signal);
         if (current !== ep) return;

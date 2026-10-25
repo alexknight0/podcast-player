@@ -8,17 +8,21 @@
 // us whether that moment is show or ad, without downloading the file.
 "use strict";
 
+// Range requests use cache: "no-store": Chrome's HTTP cache lets only one request
+// at a time use a given URL (a "cache lock"), which serialised every probe and
+// made the first one wait for the <audio> element's own download of the file.
 const Ads = (() => {
   const BYTES_PER_SEC = 16000;
   const STEP = 30;          // seconds between coarse samples (ad breaks are 40 s+)
   const PRECISION = 0.05;   // seconds; one MP3 frame is ~0.026 s
-  const CONCURRENCY = 6;
+  const CONCURRENCY = 16;   // parallel Range requests (all to one HTTP/2 host)
+  const MAPPED_CONCURRENCY = 16;
   const PROBE_BYTES = 1500; // a few MP3 frames
 
   // true = show audio, false = ad, null = not the expected MP3 format.
   async function kindAt(url, tagSize, t, signal) {
     const start = tagSize + Math.floor(t * BYTES_PER_SEC);
-    const resp = await fetch(url, { headers: { Range: `bytes=${start}-${start + PROBE_BYTES - 1}` }, signal });
+    const resp = await fetch(url, { headers: { Range: `bytes=${start}-${start + PROBE_BYTES - 1}` }, cache: "no-store", signal });
     if (resp.status !== 206) throw new Error(`range request failed (HTTP ${resp.status})`);
     const b = new Uint8Array(await resp.arrayBuffer());
     for (let i = 0; i + 4 < b.length; i++) {
@@ -46,8 +50,13 @@ const Ads = (() => {
     return out;
   }
 
-  // Probes needed to binary-search one STEP-wide interval down to PRECISION.
-  const EDGE_PROBES = Math.ceil(Math.log2(STEP / PRECISION));
+  // Probes needed to search one STEP-wide interval down to PRECISION, testing
+  // SPLIT - 1 points in parallel per round (so each round is one round-trip).
+  // (Omny serves HTTP/1.1, so the browser opens at most 6 connections and plain
+  // binary search, one probe per edge per round, keeps them all busy.)
+  const SPLIT = 2;
+  const EDGE_ROUNDS = Math.ceil(Math.log(STEP / PRECISION) / Math.log(SPLIT));
+  const EDGE_PROBES = EDGE_ROUNDS * (SPLIT - 1);
   const TYPICAL_EDGES = 6; // pre-, mid- and post-roll: estimate until the scan has run
 
   // Returns ad ranges [{start, end}] in file seconds ([] = no ads), or null if
@@ -76,7 +85,7 @@ const Ads = (() => {
     if (kinds.includes(null) || !kinds.includes(true)) return null;
     if (!kinds.includes(false)) return [];
 
-    // Binary-search each show/ad transition down to about one frame.
+    // Narrow each show/ad transition down to about one frame, SPLIT-ary search.
     const edgeIdx = [];
     for (let i = 1; i < times.length; i++) if (kinds[i] !== kinds[i - 1]) edgeIdx.push(i);
     total = done + edgeIdx.length * EDGE_PROBES;
@@ -86,11 +95,15 @@ const Ads = (() => {
       let hi = times[i];
       const loKind = kinds[i - 1];
       while (hi - lo > PRECISION) {
-        const mid = (lo + hi) / 2;
-        const k = await probe(mid);
-        if (k === null) throw new Error("unexpected MP3 frame");
-        if (k === loKind) lo = mid;
-        else hi = mid;
+        const pts = Array.from({ length: SPLIT - 1 }, (_, k) => lo + ((hi - lo) * (k + 1)) / SPLIT);
+        const ks = await Promise.all(pts.map(probe));
+        if (ks.includes(null)) throw new Error("unexpected MP3 frame");
+        // The edge lies after the last point that still matches lo's kind.
+        let last = -1;
+        ks.forEach((k, j) => { if (k === loKind) last = j; });
+        const newLo = last >= 0 ? pts[last] : lo;
+        hi = last + 1 < pts.length ? pts[last + 1] : hi;
+        lo = newLo;
       }
       return { t: hi, adStarts: loKind === true };
     }));
@@ -145,9 +158,16 @@ const Ads = (() => {
     return Math.floor((144 * MP3_KBPS[bi] * 1000) / MP3_RATES[si]) + ((b[i + 2] >> 1) & 1);
   }
 
-  async function fetchMap(guid, signal) {
+  // Fetched once per episode; prefetchMap() lets app.js start this while the audio's redirects resolve.
+  const mapCache = new Map();
+  function prefetchMap(guid) {
+    if (!mapCache.has(guid)) mapCache.set(guid, fetchMap(guid).catch(() => { mapCache.delete(guid); return null; }));
+    return mapCache.get(guid);
+  }
+
+  async function fetchMap(guid) {
     const name = guid.replace(/[^A-Za-z0-9_-]/g, "_");
-    const resp = await fetch(`admaps/${name}.json`, { signal });
+    const resp = await fetch(`admaps/${name}.json`);
     if (!resp.ok) return null; // not built (yet) for this episode
     const m = await resp.json();
     const raw = Uint8Array.from(atob(m.hashes), (ch) => ch.charCodeAt(0));
@@ -163,8 +183,9 @@ const Ads = (() => {
   // Detect ads using a precomputed map. Same contract as detect(): ad ranges in
   // file seconds, [] for none, or null if there's no map / it doesn't fit this copy.
   async function detectMapped(guid, url, tagSize, fileDuration, signal, onProgress = () => {}) {
-    const map = await fetchMap(guid, signal);
+    const map = await prefetchMap(guid);
     if (!map) return null;
+    if (signal?.aborted) throw new DOMException("aborted", "AbortError");
     const bps = (map.kbps * 1000) / 8;
     const fsec = map.spf / map.rate; // seconds per frame
     const span = (2 * map.stride + 2) * Math.ceil((144 * map.kbps * 1000) / map.rate + 1);
@@ -174,9 +195,10 @@ const Ads = (() => {
     let total = map.segs.length + 8;
     // Offset (seconds of ads before this point) of the show audio at file time x,
     // or null if nothing there matches the show (an ad, or an unusable spot).
-    const probe = async (x) => {
+    // With `withShowTime`, returns {o, t} where t is the show time it matched.
+    const probe = async (x, withShowTime = false) => {
       const startByte = tagSize + Math.max(0, Math.floor(x * bps));
-      const resp = await fetch(url, { headers: { Range: `bytes=${startByte}-${startByte + span - 1}` }, signal });
+      const resp = await fetch(url, { headers: { Range: `bytes=${startByte}-${startByte + span - 1}` }, cache: "no-store", signal });
       if (resp.status !== 206) throw new Error(`range request failed (HTTP ${resp.status})`);
       const b = new Uint8Array(await resp.arrayBuffer());
       onProgress(++done, Math.max(total, done + 1));
@@ -185,11 +207,68 @@ const Ads = (() => {
       while (i < b.length && !(frameSize(b, i) && frameSize(b, i + frameSize(b, i)))) i++;
       for (let n; (n = frameSize(b, i)) && i + n <= b.length; i += n) {
         const k = map.lookup.get(crc32(b, i, i + n));
-        if (k !== undefined) return (startByte + i - tagSize) / bps - k * fsec;
+        if (k === undefined) continue;
+        const o = (startByte + i - tagSize) / bps - k * fsec;
+        return withShowTime ? { o, t: k * fsec } : o;
       }
       return null;
     };
 
+    const fast = await detectParallel(map, fsec, showEnd, fileDuration, probe, (n) => { total = n; });
+    if (fast) return fast;
+    return detectSequential(map, fsec, showEnd, fileDuration, probe, (n) => { total += n; });
+  }
+
+  // Fast path: ads can only sit at segment boundaries, and the total ad time is known
+  // (file length minus show length), so every segment's offset lies in [0, adTotal].
+  // Probe the middle of each segment at a spread of candidate offsets, all in
+  // parallel; a hit inside the right segment gives that segment's exact offset.
+  // Returns null if anything doesn't add up (then the sequential search runs).
+  async function detectParallel(map, fsec, showEnd, fileDuration, probe, setTotal) {
+    const adTotal = fileDuration - showEnd;
+    if (adTotal < -2) return null;
+    const segs = map.segs
+      .map(([s, len]) => ({ start: s * fsec, len: len * fsec, offset: null }))
+      .filter((g) => g.len >= 2); // too short to probe; an ad there is placed at the next segment
+    // Candidate offsets per segment, spaced so the probe windows (±40% of the segment) overlap.
+    const tasks = [];
+    segs.forEach((g, si) => {
+      const step = g.len * 0.8;
+      const n = Math.max(1, Math.ceil(Math.max(0, adTotal) / step) + 1);
+      for (let j = 0; j < n; j++) tasks.push({ si, j, guess: Math.min(Math.max(0, adTotal), j * step) });
+    });
+    tasks.sort((a, b) => a.j - b.j || a.si - b.si); // first guess of every segment first
+    setTotal(tasks.length);
+    let next = 0;
+    const worker = async () => {
+      while (next < tasks.length) {
+        const { si, guess } = tasks[next++];
+        const g = segs[si];
+        if (g.offset !== null) continue; // already found
+        const r = await probe(g.start + g.len / 2 + guess, true);
+        // Accept only a hit inside this segment (a probe can land in a neighbouring one).
+        if (r && r.t >= g.start - 0.05 && r.t < g.start + g.len + 0.05 && g.offset === null) g.offset = r.o;
+      }
+    };
+    await Promise.all(Array.from({ length: MAPPED_CONCURRENCY }, worker));
+
+    const ads = [];
+    let prev = 0;
+    for (const g of segs) {
+      if (g.offset === null || g.offset < prev - 0.15) return null;
+      if (g.offset - prev > 0.3) ads.push({ start: g.start + prev, end: g.start + g.offset });
+      prev = Math.max(prev, g.offset);
+    }
+    const end = showEnd + prev;
+    if (fileDuration - end < -2) return null;
+    if (fileDuration - end > 0.3) ads.push({ start: end, end: fileDuration });
+    if (Math.abs(fileDuration - (showEnd + ads.reduce((t, a) => t + a.end - a.start, 0))) > 2) return null;
+    return ads;
+  }
+
+  // Slow, careful path: walk the segments in order, one probe each, searching
+  // whenever the offset changes somewhere unexpected.
+  async function detectSequential(map, fsec, showEnd, fileDuration, probe, addTotal) {
     const ads = [];
     const addAd = (start, end) => { if (end - start > 0.3) ads.push({ start, end }); };
     let offset = 0;
@@ -221,8 +300,8 @@ const Ads = (() => {
       let found = null;
       for (let base = p + 5; found === null && base < p + 900 && base < fileDuration; base += 60) {
         const xs = Array.from({ length: 6 }, (_, k) => base + k * 10).filter((x) => x < fileDuration);
-        total += xs.length;
-        const res = await Promise.all(xs.map(probe));
+        addTotal(xs.length);
+        const res = await Promise.all(xs.map((x) => probe(x)));
         const k = res.findIndex((r) => r !== null && r >= offset - 0.15);
         if (k >= 0) found = { x: xs[k], o: res[k] };
       }
@@ -240,5 +319,5 @@ const Ads = (() => {
     return ads;
   }
 
-  return { detect, detectMapped };
+  return { detect, detectMapped, prefetchMap };
 })();

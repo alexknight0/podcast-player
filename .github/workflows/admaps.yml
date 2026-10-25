@@ -1,0 +1,38 @@
+# Builds ad maps (admaps/<guid>.json) for new Lemonade Stand and Triforce episodes.
+# See tools/admap.py for how they're made and ads.js for how the player uses them.
+name: Ad maps
+
+on:
+  schedule:
+    - cron: "17 */6 * * *" # every 6 hours
+  workflow_dispatch:
+    inputs:
+      limit:
+        description: "Make sure the newest N episodes of each show have maps"
+        default: "10"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: admaps
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build missing maps
+        run: python3 tools/admap.py --limit "${{ github.event.inputs.limit || '10' }}"
+      - name: Commit new maps
+        run: |
+          git add admaps
+          if git diff --cached --quiet; then echo "No new maps"; exit 0; fi
+          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+            commit -m "Add ad maps"
+          git pull --rebase
+          git push

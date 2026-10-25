@@ -113,5 +113,12 @@ const ID3 = (() => {
     return { chapters, tagSize: tagEnd, url: finalUrl };
   }
 
-  return { readChapters };
+  // Just the tag size and final URL (for files whose chapters we don't need).
+  async function readTagSize(url, signal) {
+    const { bytes: b, url: finalUrl } = await fetchRange(url, 0, 10, signal);
+    const isId3 = b.length >= 10 && b[0] === 0x49 && b[1] === 0x44 && b[2] === 0x33;
+    return { chapters: [], tagSize: isId3 ? 10 + syncsafe(b, 6) + (b[5] & 0x10 ? 10 : 0) : 0, url: finalUrl };
+  }
+
+  return { readChapters, readTagSize };
 })();

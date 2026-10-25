@@ -1,9 +1,9 @@
 "use strict";
 
-// Shows. H&A comes from the iTunes API (Omny-hosted: ID3 chapters + detectable ads).
-// The Megaphone shows come from their RSS feeds (CORS *, full back catalogue; iTunes
-// caps at 200). Their files have no chapters and dynamically inserted ads that
-// ads.js can't detect, so both features are off for them.
+// Shows. H&A comes from the iTunes API (Omny-hosted: ID3 chapters, and ads that
+// ads.js detects from the MP3 frames). The Megaphone shows come from their RSS feeds
+// (CORS *, full back catalogue; iTunes caps at 200). They have no chapters, and their
+// ads are found with maps precomputed by tools/admap.py (`admaps`; see ads.js).
 const SHOWS = {
   handa: {
     name: "Hamish & Andy",
@@ -11,8 +11,8 @@ const SHOWS = {
     chapters: true,
     ads: true,
   },
-  lemonade: { name: "Lemonade Stand", rss: "https://feeds.megaphone.fm/VMP5629614579" },
-  triforce: { name: "Triforce!", rss: "https://feeds.megaphone.fm/NSR9016694791" },
+  lemonade: { name: "Lemonade Stand", rss: "https://feeds.megaphone.fm/VMP5629614579", admaps: true },
+  triforce: { name: "Triforce!", rss: "https://feeds.megaphone.fm/NSR9016694791", admaps: true },
 };
 const DEFAULT_SHOW = "handa";
 const SKIP_SECONDS = 10;
@@ -314,8 +314,20 @@ async function loadChapters(ep) {
   if (chapterAbort) chapterAbort.abort();
   chapterAbort = new AbortController();
   const signal = chapterAbort.signal;
-  // Shows without chapters (or detectable ads) skip the ID3 read; detectAds just settles.
-  if (!SHOWS[ep.show].chapters) return detectAds(ep, signal);
+  // Shows without chapters only need the ID3 tag size (for ad maps) before detectAds.
+  if (!SHOWS[ep.show].chapters) {
+    if (SHOWS[ep.show].admaps) {
+      try {
+        const info = await ID3.readTagSize(ep.url, signal);
+        if (current !== ep) return;
+        streamInfo = { url: info.url, tagSize: info.tagSize };
+        setLoadProgress(LOAD_STAGES.chapters);
+      } catch (err) {
+        if (err.name === "AbortError") return;
+      }
+    }
+    return detectAds(ep, signal);
+  }
   setStatus($("chapter-status"), "Loading chapters…", true);
   try {
     const info = await ID3.readChapters(ep.url, signal);
@@ -345,10 +357,13 @@ async function detectAds(ep, signal) {
     const cached = JSON.parse(localStorage.getItem(cacheKey) || "null");
     if (cached && Math.abs(cached.fileDuration - fileDuration()) < 0.5) {
       ads = cached.ads;
-    } else if (streamInfo && SHOWS[ep.show].ads) {
-      const found = await Ads.detect(streamInfo.url, streamInfo.tagSize, fileDuration(), signal, (done, total) => {
+    } else if (streamInfo && (SHOWS[ep.show].ads || SHOWS[ep.show].admaps)) {
+      const onProgress = (done, total) => {
         if (current === ep) setLoadProgress(LOAD_STAGES.metadata + (1 - LOAD_STAGES.metadata) * (done / total));
-      });
+      };
+      const found = SHOWS[ep.show].admaps
+        ? await Ads.detectMapped(ep.guid, streamInfo.url, streamInfo.tagSize, fileDuration(), signal, onProgress)
+        : await Ads.detect(streamInfo.url, streamInfo.tagSize, fileDuration(), signal, onProgress);
       if (current !== ep) return;
       ads = found || [];
       if (found) localStorage.setItem(cacheKey, JSON.stringify({ fileDuration: fileDuration(), ads }));

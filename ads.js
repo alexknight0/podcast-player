@@ -108,5 +108,137 @@ const Ads = (() => {
     return ads;
   }
 
-  return { detect };
+  // ---------- Megaphone shows: ad maps precomputed by tools/admap.py ----------
+  //
+  // admaps/<guid>.json lists the show audio's segments (in show frames) and the
+  // CRC-32 of every `stride`-th show frame. Ads in our copy can only sit between
+  // segments, so for each segment we Range-fetch a few frames where it should
+  // start, look their CRCs up, and learn exactly how many seconds of ads precede
+  // it (the "offset"). A probe that matches nothing is inside an ad.
+
+  const CRC_TABLE = (() => {
+    const t = new Uint32Array(256);
+    for (let n = 0; n < 256; n++) {
+      let c = n;
+      for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+      t[n] = c >>> 0;
+    }
+    return t;
+  })();
+
+  // Same as Python's zlib.crc32.
+  function crc32(b, start, end) {
+    let c = 0xffffffff;
+    for (let i = start; i < end; i++) c = CRC_TABLE[(c ^ b[i]) & 0xff] ^ (c >>> 8);
+    return (c ^ 0xffffffff) >>> 0;
+  }
+
+  const MP3_KBPS = [0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320];
+  const MP3_RATES = [44100, 48000, 32000];
+
+  // Size of the MPEG-1 Layer III frame starting at b[i], or 0 if there isn't one.
+  function frameSize(b, i) {
+    if (i + 4 > b.length || b[i] !== 0xff || (b[i + 1] & 0xfe) !== 0xfa) return 0;
+    const bi = b[i + 2] >> 4;
+    const si = (b[i + 2] >> 2) & 3;
+    if (bi === 0 || bi === 15 || si === 3) return 0;
+    return Math.floor((144 * MP3_KBPS[bi] * 1000) / MP3_RATES[si]) + ((b[i + 2] >> 1) & 1);
+  }
+
+  async function fetchMap(guid, signal) {
+    const name = guid.replace(/[^A-Za-z0-9_-]/g, "_");
+    const resp = await fetch(`admaps/${name}.json`, { signal });
+    if (!resp.ok) return null; // not built (yet) for this episode
+    const m = await resp.json();
+    const raw = Uint8Array.from(atob(m.hashes), (ch) => ch.charCodeAt(0));
+    const view = new DataView(raw.buffer);
+    const lookup = new Map();
+    for (let i = 0; i * 4 < raw.length; i++) {
+      const h = view.getUint32(i * 4, true);
+      if (h) lookup.set(h, i * m.stride);
+    }
+    return { ...m, lookup };
+  }
+
+  // Detect ads using a precomputed map. Same contract as detect(): ad ranges in
+  // file seconds, [] for none, or null if there's no map / it doesn't fit this copy.
+  async function detectMapped(guid, url, tagSize, fileDuration, signal, onProgress = () => {}) {
+    const map = await fetchMap(guid, signal);
+    if (!map) return null;
+    const bps = (map.kbps * 1000) / 8;
+    const fsec = map.spf / map.rate; // seconds per frame
+    const span = (2 * map.stride + 2) * Math.ceil((144 * map.kbps * 1000) / map.rate + 1);
+    const showEnd = map.frames * fsec;
+
+    let done = 0;
+    let total = map.segs.length + 8;
+    // Offset (seconds of ads before this point) of the show audio at file time x,
+    // or null if nothing there matches the show (an ad, or an unusable spot).
+    const probe = async (x) => {
+      const startByte = tagSize + Math.max(0, Math.floor(x * bps));
+      const resp = await fetch(url, { headers: { Range: `bytes=${startByte}-${startByte + span - 1}` }, signal });
+      if (resp.status !== 206) throw new Error(`range request failed (HTTP ${resp.status})`);
+      const b = new Uint8Array(await resp.arrayBuffer());
+      onProgress(++done, Math.max(total, done + 1));
+      // Find a frame boundary (two consecutive headers), then walk the frames.
+      let i = 0;
+      while (i < b.length && !(frameSize(b, i) && frameSize(b, i + frameSize(b, i)))) i++;
+      for (let n; (n = frameSize(b, i)) && i + n <= b.length; i += n) {
+        const k = map.lookup.get(crc32(b, i, i + n));
+        if (k !== undefined) return (startByte + i - tagSize) / bps - k * fsec;
+      }
+      return null;
+    };
+
+    const ads = [];
+    const addAd = (start, end) => { if (end - start > 0.3) ads.push({ start, end }); };
+    let offset = 0;
+    let goodAt = 0; // a file time known to have offset `offset` (or the start of the file)
+    const same = (o) => o !== null && Math.abs(o - offset) < 0.15;
+
+    for (const [s, len] of map.segs) {
+      const segStart = s * fsec;
+      const segLen = len * fsec;
+      if (segLen < 2) continue; // too short to probe reliably; any ad here shows up at the next segment
+      const p = segStart + offset + 0.3;
+      const o = await probe(p);
+      if (same(o)) { goodAt = p; continue; }
+      if (o !== null && o > offset) {
+        // Ads somewhere before p but not at a known boundary: binary-search for where the offset changes.
+        let lo = goodAt;
+        let hi = p;
+        while (hi - lo > 0.1) {
+          const mid = (lo + hi) / 2;
+          if (same(await probe(mid))) lo = mid;
+          else hi = mid;
+        }
+        addAd(lo, lo + (o - offset));
+        offset = o;
+        goodAt = p;
+        continue;
+      }
+      // Inside an ad (or a ruined spot): look further on, a few probes at a time.
+      let found = null;
+      for (let base = p + 5; found === null && base < p + 900 && base < fileDuration; base += 60) {
+        const xs = Array.from({ length: 6 }, (_, k) => base + k * 10).filter((x) => x < fileDuration);
+        total += xs.length;
+        const res = await Promise.all(xs.map(probe));
+        const k = res.findIndex((r) => r !== null && r >= offset - 0.15);
+        if (k >= 0) found = { x: xs[k], o: res[k] };
+      }
+      if (!found) return null; // the show never resumed: map doesn't fit this copy
+      addAd(segStart + offset, segStart + found.o);
+      offset = Math.max(offset, found.o);
+      goodAt = found.x;
+    }
+
+    // Everything after the last show frame is post-roll. The map must account for the whole file.
+    const end = showEnd + offset;
+    if (fileDuration - end < -2) return null;
+    addAd(end, fileDuration);
+    if (Math.abs(fileDuration - (showEnd + ads.reduce((t, a) => t + a.end - a.start, 0))) > 2) return null;
+    return ads;
+  }
+
+  return { detect, detectMapped };
 })();

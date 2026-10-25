@@ -65,6 +65,29 @@ button:focus-visible, input:focus-visible, a:focus-visible {
   border-radius: 50%;
 }
 
+/* Show switcher under the list header */
+.show-tabs {
+  display: flex;
+  gap: 6px;
+  padding: 8px 12px;
+  background: var(--bg);
+  border-bottom: 1px solid var(--panel);
+  overflow-x: auto;
+}
+
+.show-tabs button {
+  flex: none;
+  min-height: 36px;
+  padding: 0 11px;
+  border-radius: 18px;
+  background: var(--panel);
+  color: var(--muted);
+  font-size: 0.85rem;
+  white-space: nowrap;
+}
+
+.show-tabs button[aria-pressed="true"] { background: var(--accent); color: var(--accent-text); font-weight: 700; }
+
 .status { color: var(--muted); padding: 0 16px; }
 .status:empty { display: none; }
 

@@ -23,10 +23,11 @@
   <!-- Episode list view -->
   <main id="list-view" class="view">
     <header class="bar">
-      <h1>Hamish &amp; Andy</h1>
+      <h1 id="list-title">Hamish &amp; Andy</h1>
       <button id="sync-btn" class="icon-btn sync-btn" aria-label="Sync settings" data-state="off">☁</button>
       <button id="refresh" class="icon-btn" aria-label="Refresh episode list">⟳</button>
     </header>
+    <nav id="show-tabs" class="show-tabs" aria-label="Podcast"></nav>
     <p id="list-status" class="status" role="status">Loading episodes…</p>
     <ul id="episodes" class="episodes"></ul>
   </main>
@@ -64,7 +65,7 @@
       <button id="mark-done" class="mark-done" type="button" aria-pressed="false">Mark as played</button>
     </section>
 
-    <section aria-label="Chapters">
+    <section id="chapters-section" aria-label="Chapters">
       <h2 class="section-title">Chapters</h2>
       <p id="chapter-status" class="status" role="status"></p>
       <ol id="chapters" class="chapters"></ol>

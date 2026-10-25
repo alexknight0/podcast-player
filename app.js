@@ -1,7 +1,20 @@
 "use strict";
 
-const LOOKUP_URL =
-  "https://itunes.apple.com/lookup?id=213334232&media=podcast&entity=podcastEpisode&limit=200";
+// Shows. H&A comes from the iTunes API (Omny-hosted: ID3 chapters + detectable ads).
+// The Megaphone shows come from their RSS feeds (CORS *, full back catalogue; iTunes
+// caps at 200). Their files have no chapters and dynamically inserted ads that
+// ads.js can't detect, so both features are off for them.
+const SHOWS = {
+  handa: {
+    name: "Hamish & Andy",
+    lookup: "https://itunes.apple.com/lookup?id=213334232&media=podcast&entity=podcastEpisode&limit=200",
+    chapters: true,
+    ads: true,
+  },
+  lemonade: { name: "Lemonade Stand", rss: "https://feeds.megaphone.fm/VMP5629614579" },
+  triforce: { name: "Triforce!", rss: "https://feeds.megaphone.fm/NSR9016694791" },
+};
+const DEFAULT_SHOW = "handa";
 const SKIP_SECONDS = 10;
 const SAVE_EVERY_SECONDS = 5;
 
@@ -9,7 +22,8 @@ const $ = (id) => document.getElementById(id);
 const audio = $("audio");
 const seek = $("seek");
 
-let episodes = [];      // [{guid, title, date, durationSec, url, art, description}]
+let show = SHOWS[localStorage.getItem("show")] ? localStorage.getItem("show") : DEFAULT_SHOW; // show in the list view
+let episodes = [];      // episodes of `show`: [{guid, show, title, date, durationSec, url, art}]
 let current = null;     // episode currently loaded into <audio>
 let chapters = [];      // chapters for `current`, in episode time
 let ads = [];           // ad breaks in the stream for `current`, in file time [{start, end}]
@@ -118,47 +132,118 @@ function setStatus(node, text, loading = false) {
 
 // ---------- episode list ----------
 
-function toEpisode(r) {
+// Descriptions aren't shown, so they aren't kept (Triforce's alone would be ~1 MB of localStorage).
+function fromItunes(r, key) {
   return {
     guid: r.episodeGuid || String(r.trackId),
+    show: key,
     title: r.trackName,
     date: new Date(r.releaseDate),
     durationSec: (r.trackTimeMillis || 0) / 1000,
     url: r.episodeUrl,
     art: r.artworkUrl600 || r.artworkUrl160,
-    description: r.shortDescription || r.description || "",
   };
 }
 
-async function loadEpisodes() {
-  const status = $("list-status");
-  // Show cached list immediately, then refresh from the network.
-  const cached = localStorage.getItem("episodes");
-  if (cached && !episodes.length) {
-    episodes = JSON.parse(cached).map((e) => ({ ...e, date: new Date(e.date) }));
-    renderList();
+// itunes:duration is either plain seconds or [HH:]MM:SS.
+const parseDuration = (s) => (s || "").split(":").reduce((acc, part) => acc * 60 + (Number(part) || 0), 0);
+
+function parseRss(text, key) {
+  const xml = new DOMParser().parseFromString(text, "application/xml");
+  if (xml.querySelector("parsererror")) throw new Error("bad RSS feed");
+  const tag = (node, name) => node.getElementsByTagName(name)[0];
+  const channelArt = tag(xml, "itunes:image")?.getAttribute("href") || "";
+  return [...xml.getElementsByTagName("item")].map((item) => {
+    const url = tag(item, "enclosure")?.getAttribute("url");
+    return url && {
+      guid: tag(item, "guid")?.textContent.trim() || url,
+      show: key,
+      title: tag(item, "title")?.textContent.trim() || "Untitled",
+      date: new Date(tag(item, "pubDate")?.textContent),
+      durationSec: parseDuration(tag(item, "itunes:duration")?.textContent),
+      url,
+      art: tag(item, "itunes:image")?.getAttribute("href") || channelArt,
+    };
+  }).filter(Boolean);
+}
+
+async function fetchEpisodes(key) {
+  const cfg = SHOWS[key];
+  const resp = await fetch(cfg.lookup || cfg.rss);
+  if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+  const list = cfg.lookup
+    ? (await resp.json()).results
+      .filter((r) => r.wrapperType === "podcastEpisode" && r.episodeUrl)
+      .map((r) => fromItunes(r, key))
+    : parseRss(await resp.text(), key);
+  return list.sort((a, b) => b.date - a.date);
+}
+
+// Per-show episode lists, kept in localStorage `episodes:<show>` so the list shows instantly.
+const lists = {};
+function cachedEpisodes(key) {
+  if (!lists[key]) {
+    // H&A's list used to live under plain `episodes`.
+    const raw = localStorage.getItem(`episodes:${key}`) || (key === "handa" && localStorage.getItem("episodes"));
+    lists[key] = raw ? JSON.parse(raw).map((e) => ({ ...e, show: key, date: new Date(e.date) })) : [];
   }
+  return lists[key];
+}
+
+// Refresh the current show's list from the network (one request per show at a time).
+const inflight = {};
+function loadEpisodes() {
+  const key = show;
+  inflight[key] ||= refreshEpisodes(key).finally(() => { delete inflight[key]; });
+  return inflight[key];
+}
+
+async function refreshEpisodes(key) {
+  const status = $("list-status");
+  const isCurrent = () => key === show;
   setStatus(status, episodes.length ? "" : "Loading episodes…", true);
   $("refresh").classList.add("spinning");
   try {
-    const resp = await fetch(LOOKUP_URL);
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-    const data = await resp.json();
-    episodes = data.results
-      .filter((r) => r.wrapperType === "podcastEpisode" && r.episodeUrl)
-      .map(toEpisode)
-      .sort((a, b) => b.date - a.date);
-    localStorage.setItem("episodes", JSON.stringify(episodes));
+    const list = await fetchEpisodes(key);
+    lists[key] = list;
+    try {
+      localStorage.setItem(`episodes:${key}`, JSON.stringify(list));
+      if (key === "handa") localStorage.removeItem("episodes");
+    } catch { /* storage full: keep the list in memory only */ }
+    if (!isCurrent()) return;
+    episodes = list;
     setStatus(status, "");
     renderList();
   } catch (err) {
+    if (!isCurrent()) return;
     setStatus(status, episodes.length
       ? `Couldn't refresh (${err.message}). Showing saved list.`
       : `Couldn't load episodes (${err.message}).`);
   } finally {
-    $("refresh").classList.remove("spinning");
+    if (isCurrent()) $("refresh").classList.remove("spinning");
   }
 }
+
+// Switch the list view to another show.
+function setShow(key) {
+  show = key;
+  localStorage.setItem("show", key);
+  $("list-title").textContent = SHOWS[key].name;
+  for (const btn of $("show-tabs").children) btn.setAttribute("aria-pressed", String(btn.dataset.show === key));
+  episodes = cachedEpisodes(key);
+  setStatus($("list-status"), episodes.length ? "" : "Loading episodes…", true);
+  $("refresh").classList.toggle("spinning", Boolean(inflight[key]));
+  renderList();
+  window.scrollTo(0, 0);
+  loadEpisodes();
+}
+
+$("show-tabs").replaceChildren(...Object.entries(SHOWS).map(([key, cfg]) => {
+  const btn = el("button", { type: "button", textContent: cfg.name });
+  btn.dataset.show = key;
+  btn.addEventListener("click", () => { if (key !== show) setShow(key); });
+  return btn;
+}));
 
 function renderList() {
   const ul = $("episodes");
@@ -181,7 +266,7 @@ function renderList() {
         bar.firstChild.style.width = `${pct}%`;
         btn.append(bar);
       }
-      btn.addEventListener("click", () => { location.hash = `ep=${encodeURIComponent(ep.guid)}`; });
+      btn.addEventListener("click", () => { location.hash = `ep=${encodeURIComponent(ep.guid)}&show=${ep.show}`; });
       return el("li", { className: done ? "done" : "" }, btn);
     }),
   );
@@ -221,6 +306,7 @@ function openEpisode(ep) {
   updateLoading();
   setBusy(false);
   setupMediaSession();
+  $("chapters-section").hidden = !SHOWS[ep.show].chapters;
   loadChapters(ep);
 }
 
@@ -228,6 +314,8 @@ async function loadChapters(ep) {
   if (chapterAbort) chapterAbort.abort();
   chapterAbort = new AbortController();
   const signal = chapterAbort.signal;
+  // Shows without chapters (or detectable ads) skip the ID3 read; detectAds just settles.
+  if (!SHOWS[ep.show].chapters) return detectAds(ep, signal);
   setStatus($("chapter-status"), "Loading chapters…", true);
   try {
     const info = await ID3.readChapters(ep.url, signal);
@@ -257,7 +345,7 @@ async function detectAds(ep, signal) {
     const cached = JSON.parse(localStorage.getItem(cacheKey) || "null");
     if (cached && Math.abs(cached.fileDuration - fileDuration()) < 0.5) {
       ads = cached.ads;
-    } else if (streamInfo) {
+    } else if (streamInfo && SHOWS[ep.show].ads) {
       const found = await Ads.detect(streamInfo.url, streamInfo.tagSize, fileDuration(), signal, (done, total) => {
         if (current === ep) setLoadProgress(LOAD_STAGES.metadata + (1 - LOAD_STAGES.metadata) * (done / total));
       });
@@ -456,10 +544,11 @@ function updatePlayButton() {
 function updateMediaMetadata() {
   if (!("mediaSession" in navigator) || !current) return;
   const ch = chapters[activeChapter];
+  const showName = SHOWS[current.show].name;
   navigator.mediaSession.metadata = new MediaMetadata({
     title: inAd ? "Ad break" : ch ? ch.title : current.title,
-    artist: ch || inAd ? current.title : "Hamish & Andy",
-    album: "Hamish & Andy",
+    artist: ch || inAd ? current.title : showName,
+    album: showName,
     artwork: current.art ? [{ src: current.art, sizes: "600x600", type: "image/jpeg" }] : [],
   });
 }
@@ -585,13 +674,17 @@ Progress.on("change", () => {
   }
 });
 
-// ---------- routing (#ep=<guid> shows the player; empty hash shows the list) ----------
+// ---------- routing (#ep=<guid>&show=<key> shows the player; empty hash shows the list) ----------
+// Old links without `show` are H&A episodes.
 
 async function route() {
-  const m = location.hash.match(/^#ep=(.+)$/);
-  if (m) {
+  const params = new URLSearchParams(location.hash.slice(1));
+  const guid = params.get("ep");
+  if (guid) {
+    const key = SHOWS[params.get("show")] ? params.get("show") : DEFAULT_SHOW;
+    if (key !== show) setShow(key); // so "back" returns to this show's list
     if (!episodes.length) await loadEpisodes();
-    const ep = episodes.find((e) => e.guid === decodeURIComponent(m[1]));
+    const ep = episodes.find((e) => e.guid === guid);
     if (ep) {
       $("list-view").hidden = true;
       $("player-view").hidden = false;
@@ -602,7 +695,7 @@ async function route() {
   }
   $("player-view").hidden = true;
   $("list-view").hidden = false;
-  document.title = "H&A Player";
+  document.title = SHOWS[show].name;
   renderList(); // refresh "listened" progress
 }
 
@@ -615,7 +708,8 @@ const UNLOCK_KEY = "unlocked";
 function startApp() {
   document.body.classList.remove("locked");
   window.addEventListener("hashchange", route);
-  loadEpisodes().then(route);
+  setShow(show);
+  route();
 }
 
 if (localStorage.getItem(UNLOCK_KEY) === "1") {

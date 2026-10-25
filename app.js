@@ -626,18 +626,11 @@ function setupMediaSession() {
     seekbackward: (e) => skipBy(-(e.seekOffset || SKIP_SECONDS)),
     seekforward: (e) => skipBy(e.seekOffset || SKIP_SECONDS),
     seekto: (e) => seekTo(e.seekTime),
-    // Previous/next track buttons jump between chapters.
-    previoustrack: () => {
-      const t = toEpisodeTime(audio.currentTime);
-      const i = chapterIndexAt(t);
-      // Within 3s of a chapter start, go to the previous chapter; otherwise restart this one.
-      const target = i >= 0 && t - chapters[i].start < 3 ? i - 1 : i;
-      seekTo(target >= 0 ? toFileTime(chapters[target].start) : 0);
-    },
-    nexttrack: () => {
-      const next = chapters[chapterIndexAt(toEpisodeTime(audio.currentTime)) + 1];
-      if (next) seekTo(toFileTime(next.start));
-    },
+    // No previoustrack/nexttrack (they used to jump between chapters): Android's
+    // lock screen has only 3 slots and Chrome fills them with prev/next track
+    // whenever those are registered, which hid the −10/+10 buttons.
+    previoustrack: null,
+    nexttrack: null,
   };
   for (const [action, fn] of Object.entries(handlers)) {
     try { ms.setActionHandler(action, fn); } catch { /* unsupported action */ }

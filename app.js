@@ -32,6 +32,7 @@ let lastSaved = 0;
 let chapterAbort = null;
 let resumeAt = null;    // episode-time position to apply once the audio (and ad map) is ready
 let adsSettled = false; // ad detection finished (or isn't possible) for `current`
+let adsDetected = false; // detection actually ran on `current` (ads, if any, are known and skipped)
 let streamInfo = null;  // { url, tagSize } from the ID3 read, used for ad detection
 
 // ---------- time model ----------
@@ -288,6 +289,7 @@ function openEpisode(ep) {
   chapters = [];
   ads = [];
   adsSettled = false;
+  adsDetected = false;
   streamInfo = null;
   loadProgress = 0;
   setLoadProgress(0);
@@ -357,6 +359,7 @@ async function detectAds(ep, signal) {
     const cached = JSON.parse(localStorage.getItem(cacheKey) || "null");
     if (cached && Math.abs(cached.fileDuration - fileDuration()) < 0.5) {
       ads = cached.ads;
+      adsDetected = true;
     } else if (streamInfo && (SHOWS[ep.show].ads || SHOWS[ep.show].admaps)) {
       const onProgress = (done, total) => {
         if (current === ep) setLoadProgress(LOAD_STAGES.metadata + (1 - LOAD_STAGES.metadata) * (done / total));
@@ -366,6 +369,7 @@ async function detectAds(ep, signal) {
         : await Ads.detect(streamInfo.url, streamInfo.tagSize, fileDuration(), signal, onProgress);
       if (current !== ep) return;
       ads = found || [];
+      adsDetected = Boolean(found);
       if (found) localStorage.setItem(cacheKey, JSON.stringify({ fileDuration: fileDuration(), ads }));
     }
   } catch (err) {
@@ -373,6 +377,7 @@ async function detectAds(ep, signal) {
     ads = []; // play on with unadjusted times
   }
   adsSettled = true;
+  updateAdBadge();
   setLoadProgress(1);
   rememberDuration(ep.guid, episodeDuration());
   applyResume();
@@ -402,6 +407,19 @@ function updateLoading(failed = false) {
   const loading = Boolean(current) && !failed && !(fileDuration() && adsSettled);
   $("seek-wrap").classList.toggle("loading", loading);
   $("seek-wrap").setAttribute("aria-busy", String(loading));
+}
+
+// "AD" badge between the times: whether ad detection has run on this episode.
+// The tooltip shows on hover, or on tap (focus) on phones.
+function updateAdBadge() {
+  const badge = $("ad-badge");
+  const n = ads.length;
+  const text = adsDetected
+    ? n ? `Ad detection has run: ${n} ad break${n === 1 ? "" : "s"} skipped.` : "Ad detection has run: no ads found."
+    : "Ad detection hasn't run on this episode. Contact the website owner if you want it run.";
+  badge.dataset.state = adsDetected ? "on" : "off";
+  badge.setAttribute("aria-label", text);
+  $("ad-tip").textContent = text;
 }
 
 // Spinner on the play button while audio is buffering.

@@ -311,6 +311,7 @@ function openEpisode(ep) {
   if (isDone(ep.guid) && listDuration(ep) - resume <= FINISHED_WITHIN_SECONDS) resume = 0;
   // Start ~2s before where we left off, for context. Applied once the audio and ad map are ready.
   resumeAt = resume > 0 ? Math.max(0, resume - 2) : null;
+  playPending = false;
   seek.max = 0;
   seek.value = 0;
   updateTimes();
@@ -402,6 +403,11 @@ async function detectAds(ep, signal) {
   updateLoading();
   // If playback started before detection finished and is inside an ad, skip it now.
   if (resumeAt === null && adAt(audio.currentTime)) seekTo(audio.currentTime);
+  // Play was pressed while loading: start now, from the resume point with ads known.
+  if (playPending) {
+    playPending = false;
+    play();
+  }
 }
 
 // Loading progress (0..1) shown in the placeholder ring. Reading chapters and the
@@ -421,6 +427,7 @@ function setLoadProgress(p) {
 function updateLoading(failed = false) {
   if (current && fileDuration()) setLoadProgress(LOAD_STAGES.metadata);
   const loading = Boolean(current) && !failed && !(fileDuration() && adsSettled);
+  if (failed && playPending) { playPending = false; setBusy(false); }
   $("seek-wrap").classList.toggle("loading", loading);
   $("seek-wrap").setAttribute("aria-busy", String(loading));
 }
@@ -622,7 +629,7 @@ function setupMediaSession() {
   updateMediaMetadata();
   const handlers = {
     play: () => play(),
-    pause: () => audio.pause(),
+    pause: () => (playPending ? togglePlay() : audio.pause()),
     seekbackward: (e) => skipBy(-(e.seekOffset || SKIP_SECONDS)),
     seekforward: (e) => skipBy(e.seekOffset || SKIP_SECONDS),
     seekto: (e) => seekTo(e.seekTime),
@@ -639,13 +646,32 @@ function setupMediaSession() {
 
 // ---------- events ----------
 
+// Pressing play while the episode is still loading (length / ad map unknown) queues
+// it: the button spins and playback starts when loading finishes (end of detectAds),
+// so it begins at the resume point with ads already skippable. Press again to cancel.
+let playPending = false;
+const stillLoading = () => Boolean(current) && !(fileDuration() && adsSettled);
+
 function play() {
-  applyResume(true); // don't wait for ad detection if the user is ready to listen
+  if (stillLoading()) {
+    playPending = true;
+    setBusy(true);
+    return Promise.resolve();
+  }
+  applyResume(true);
   if (audio.readyState < 3) setBusy(true);
   return audio.play().catch(() => setBusy(false));
 }
 
-$("play").addEventListener("click", () => (audio.paused ? play() : audio.pause()));
+function togglePlay() {
+  if (playPending) {
+    playPending = false;
+    setBusy(false);
+  } else if (audio.paused) play();
+  else audio.pause();
+}
+
+$("play").addEventListener("click", togglePlay);
 $("back10").addEventListener("click", () => { applyResume(true); skipBy(-SKIP_SECONDS); });
 $("fwd10").addEventListener("click", () => { applyResume(true); skipBy(SKIP_SECONDS); });
 $("back").addEventListener("click", () => { location.hash = ""; });

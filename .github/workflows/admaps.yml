@@ -22,17 +22,22 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
       - name: Build missing maps
         run: python3 tools/admap.py --limit "${{ github.event.inputs.limit || '10' }}"
       - name: Commit new maps
+        env:
+          # Needed for both the commit and the rebase (which rewrites it as a new commit).
+          GIT_AUTHOR_NAME: github-actions[bot]
+          GIT_AUTHOR_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+          GIT_COMMITTER_NAME: github-actions[bot]
+          GIT_COMMITTER_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
         run: |
           git add admaps
           if git diff --cached --quiet; then echo "No new maps"; exit 0; fi
-          git -c user.name="github-actions[bot]" -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
-            commit -m "Add ad maps"
-          git pull --rebase
-          git push
+          git commit -m "Add ad maps"
+          git pull --rebase origin main
+          git push origin HEAD:main

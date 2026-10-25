@@ -1,6 +1,6 @@
 {
-  "name": "Hamish & Andy Player",
-  "short_name": "H&A",
+  "name": "Podcast Player",
+  "short_name": "Podcasts",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",

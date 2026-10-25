@@ -1,15 +1,17 @@
 "use strict";
 
-// Shows. H&A comes from the iTunes API (Omny-hosted: ID3 chapters, and ads that
-// ads.js detects from the MP3 frames). The Megaphone shows come from their RSS feeds
-// (CORS *, full back catalogue; iTunes caps at 200). They have no chapters, and their
-// ads are found with maps precomputed by tools/admap.py (`admaps`; see ads.js).
+// Shows. H&A comes from the iTunes API (Omny-hosted: ID3 chapters). The Megaphone
+// shows come from their RSS feeds (CORS *, full back catalogue; iTunes caps at 200)
+// and have no chapters. Ads on all three are found with maps precomputed by
+// tools/admap.py (`admaps`; see ads.js); for H&A, ads.js can also detect them from
+// the MP3 frames (`ads`) on recent episodes that don't have a map yet.
 const SHOWS = {
   handa: {
     name: "Hamish & Andy",
     lookup: "https://itunes.apple.com/lookup?id=213334232&media=podcast&entity=podcastEpisode&limit=200",
     chapters: true,
     ads: true,
+    admaps: true,
   },
   lemonade: { name: "Lemonade Stand", rss: "https://feeds.megaphone.fm/VMP5629614579", admaps: true },
   triforce: { name: "Triforce!", rss: "https://feeds.megaphone.fm/NSR9016694791", admaps: true },
@@ -149,6 +151,14 @@ function fromItunes(r, key) {
 // itunes:duration is either plain seconds or [HH:]MM:SS.
 const parseDuration = (s) => (s || "").split(":").reduce((acc, part) => acc * 60 + (Number(part) || 0), 0);
 
+// Megaphone enclosures go through ~5 measurement-tracker redirects (podtrac,
+// podscribe, ...) before reaching Megaphone, which cost ~4s per episode open.
+// Go straight to Megaphone (it still counts the download and serves the ads).
+const directUrl = (url) => {
+  const m = url.match(/(?:^|\/)(traffic\.megaphone\.fm\/.+)$/);
+  return m ? `https://${m[1]}` : url;
+};
+
 function parseRss(text, key) {
   const xml = new DOMParser().parseFromString(text, "application/xml");
   if (xml.querySelector("parsererror")) throw new Error("bad RSS feed");
@@ -162,7 +172,7 @@ function parseRss(text, key) {
       title: tag(item, "title")?.textContent.trim() || "Untitled",
       date: new Date(tag(item, "pubDate")?.textContent),
       durationSec: parseDuration(tag(item, "itunes:duration")?.textContent),
-      url,
+      url: directUrl(url),
       art: tag(item, "itunes:image")?.getAttribute("href") || channelArt,
     };
   }).filter(Boolean);
@@ -186,7 +196,7 @@ function cachedEpisodes(key) {
   if (!lists[key]) {
     // H&A's list used to live under plain `episodes`.
     const raw = localStorage.getItem(`episodes:${key}`) || (key === "handa" && localStorage.getItem("episodes"));
-    lists[key] = raw ? JSON.parse(raw).map((e) => ({ ...e, show: key, date: new Date(e.date) })) : [];
+    lists[key] = raw ? JSON.parse(raw).map((e) => ({ ...e, show: key, url: directUrl(e.url), date: new Date(e.date) })) : [];
   }
   return lists[key];
 }
@@ -332,6 +342,7 @@ async function loadChapters(ep) {
     return detectAds(ep, signal);
   }
   setStatus($("chapter-status"), "Loading chapters…", true);
+  if (SHOWS[ep.show].admaps) Ads.prefetchMap(ep.guid);
   try {
     const info = await ID3.readChapters(ep.url, signal);
     if (current !== ep) return;
@@ -365,9 +376,13 @@ async function detectAds(ep, signal) {
       const onProgress = (done, total) => {
         if (current === ep) setLoadProgress(LOAD_STAGES.metadata + (1 - LOAD_STAGES.metadata) * (done / total));
       };
-      const found = SHOWS[ep.show].admaps
+      let found = SHOWS[ep.show].admaps
         ? await Ads.detectMapped(ep.guid, streamInfo.url, streamInfo.tagSize, fileDuration(), signal, onProgress)
-        : await Ads.detect(streamInfo.url, streamInfo.tagSize, fileDuration(), signal, onProgress);
+        : null;
+      // No map (yet), or it doesn't fit this copy: H&A can still detect from the MP3 frames.
+      if (found === null && SHOWS[ep.show].ads && current === ep) {
+        found = await Ads.detect(streamInfo.url, streamInfo.tagSize, fileDuration(), signal, onProgress);
+      }
       if (current !== ep) return;
       ads = found || [];
       adsDetected = Boolean(found);

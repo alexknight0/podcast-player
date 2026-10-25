@@ -252,17 +252,32 @@ const Ads = (() => {
     };
     await Promise.all(Array.from({ length: MAPPED_CONCURRENCY }, worker));
 
+    // A segment no probe matched isn't the show in this copy. That happens when every
+    // copy the map was built from got the same promo there (so it looked like show)
+    // and this copy got something else: treat it as part of the surrounding ad break.
     const ads = [];
     let prev = 0;
+    let adFrom = null; // file time where an unmatched stretch began
+    let unmatched = 0; // map seconds not present in this copy
     for (const g of segs) {
-      if (g.offset === null || g.offset < prev - 0.15) return null;
-      if (g.offset - prev > 0.3) ads.push({ start: g.start + prev, end: g.start + g.offset });
+      if (g.offset === null) {
+        if (adFrom === null) adFrom = g.start + prev;
+        unmatched += g.len;
+        continue;
+      }
+      if (g.offset < prev - unmatched - 0.15) return null;
+      const start = adFrom ?? g.start + prev;
+      const end = g.start + g.offset;
+      if (end - start > 0.3) ads.push({ start, end });
+      adFrom = null;
       prev = Math.max(prev, g.offset);
     }
-    const end = showEnd + prev;
+    if (unmatched > 180) return null; // too much missing: the map doesn't fit this copy
+    const end = adFrom ?? showEnd + prev;
     if (fileDuration - end < -2) return null;
     if (fileDuration - end > 0.3) ads.push({ start: end, end: fileDuration });
-    if (Math.abs(fileDuration - (showEnd + ads.reduce((t, a) => t + a.end - a.start, 0))) > 2) return null;
+    const adTime = ads.reduce((t, a) => t + a.end - a.start, 0);
+    if (Math.abs(fileDuration - (showEnd - unmatched + adTime)) > 2) return null;
     return ads;
   }
 

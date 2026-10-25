@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Build ad maps for the Megaphone-hosted shows (run by .github/workflows/admaps.yml).
+"""Build ad maps for the podcasts with stitched-in ads (run by .github/workflows/admaps.yml).
 
-Megaphone stitches ads into every download, and different user agents get different
-ads. The show audio itself is byte-identical in every copy, so: download an episode
+Megaphone (Lemonade Stand, Triforce) and Omny (Hamish & Andy) stitch ads into every
+download, and different user agents get different ads (Omny gives curl none at all).
+The show audio itself is byte-identical in every copy, so: download an episode
 several times with different user agents, and the MP3 frames that appear exactly once
 in every copy are the show; everything else is ads.
 
@@ -30,11 +31,19 @@ import xml.etree.ElementTree as ET
 import zlib
 from collections import Counter
 
-FEEDS = {
-    "lemonade": "https://feeds.megaphone.fm/VMP5629614579",
-    "triforce": "https://feeds.megaphone.fm/NSR9016694791",
+SHOWS = {
+    # Megaphone: each of these user agents got a different set of ads in testing (2026-10).
+    "lemonade": {"rss": "https://feeds.megaphone.fm/VMP5629614579"},
+    "triforce": {"rss": "https://feeds.megaphone.fm/NSR9016694791"},
+    # Omny (H&A): every browser-like UA gets the same ads, and curl gets the ad-free
+    # file, so one copy of each pins down the show exactly.
+    "handa": {
+        "itunes": "https://itunes.apple.com/lookup?id=213334232&media=podcast&entity=podcastEpisode&limit=200",
+        "uas": ["Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Mobile Safari/537.36",
+                "curl/8.7.1"],
+        "min_copies": 2,
+    },
 }
-# Each of these got a different set of ads in testing (2026-10).
 USER_AGENTS = [
     "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Mobile Safari/537.36",
     "curl/8.7.1",
@@ -188,14 +197,28 @@ def build_map(readers):
     }
 
 
+def direct_url(url):
+    """Skip the measurement-tracker redirects in front of Megaphone files (as the player does)."""
+    m = re.search(r"(?:^|/)(traffic\.megaphone\.fm/.+)$", url)
+    return f"https://{m.group(1)}" if m else url
+
+
 def feed_items(show):
-    with urllib.request.urlopen(urllib.request.Request(FEEDS[show], headers={"User-Agent": USER_AGENTS[1]}), timeout=60) as r:
-        root = ET.fromstring(r.read())
-    for item in root.iter("item"):
+    cfg = SHOWS[show]
+    req = urllib.request.Request(cfg.get("rss") or cfg["itunes"], headers={"User-Agent": USER_AGENTS[1]})
+    with urllib.request.urlopen(req, timeout=60) as r:
+        body = r.read()
+    if "itunes" in cfg:
+        results = [x for x in json.loads(body)["results"] if x.get("wrapperType") == "podcastEpisode" and x.get("episodeUrl")]
+        results.sort(key=lambda x: x["releaseDate"], reverse=True)
+        for x in results:
+            yield {"guid": x.get("episodeGuid") or str(x["trackId"]), "title": x["trackName"], "url": x["episodeUrl"]}
+        return
+    for item in ET.fromstring(body).iter("item"):
         enc = item.find("enclosure")
         guid = (item.findtext("guid") or "").strip()
         if enc is not None and guid:
-            yield {"guid": guid, "title": (item.findtext("title") or "").strip(), "url": enc.get("url")}
+            yield {"guid": guid, "title": (item.findtext("title") or "").strip(), "url": direct_url(enc.get("url"))}
 
 
 def safe_name(guid):
@@ -204,10 +227,11 @@ def safe_name(guid):
 
 def process(show, item, out_dir):
     url = item["url"]
-    with concurrent.futures.ThreadPoolExecutor(len(USER_AGENTS)) as pool:
-        readers = list(pool.map(lambda a: download_hashes(url, a[1], f"copy {a[0] + 1}"), enumerate(USER_AGENTS)))
+    uas = SHOWS[show].get("uas", USER_AGENTS)
+    with concurrent.futures.ThreadPoolExecutor(len(uas)) as pool:
+        readers = list(pool.map(lambda a: download_hashes(url, a[1], f"copy {a[0] + 1}"), enumerate(uas)))
     readers = [r for r in readers if r and r.crcs]
-    if len(readers) < MIN_COPIES:
+    if len(readers) < SHOWS[show].get("min_copies", MIN_COPIES):
         raise ValueError(f"only {len(readers)} downloads succeeded")
     m = build_map(readers)
     m = {"guid": item["guid"], "show": show, "title": item["title"], **m}
@@ -222,7 +246,7 @@ def summary(m):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--shows", nargs="*", default=list(FEEDS), choices=list(FEEDS))
+    ap.add_argument("--shows", nargs="*", default=list(SHOWS), choices=list(SHOWS))
     ap.add_argument("--limit", type=int, default=10, help="newest N episodes per show to make sure have maps")
     ap.add_argument("--max-new", type=int, default=40, help="stop after building this many maps in one run")
     ap.add_argument("--files", nargs="+", help="build one map from local copies instead (testing)")

@@ -135,6 +135,15 @@ button:focus-visible, input:focus-visible, a:focus-visible {
 
 .mark-done[aria-pressed="true"] { color: var(--accent); border-color: var(--accent); }
 
+.player-toggles {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 20px;
+}
+.player-toggles .mark-done { margin: 0; }
+
 /* Player */
 .player { padding: 16px; }
 

@@ -321,6 +321,10 @@ function openEpisode(ep) {
   setupMediaSession();
   $("chapters-section").hidden = !SHOWS[ep.show].chapters;
   loadChapters(ep);
+  if (autoplayOnOpen) {
+    autoplayOnOpen = false;
+    play(); // queued until loading finishes
+  }
 }
 
 async function loadChapters(ep) {
@@ -678,6 +682,31 @@ $("back").addEventListener("click", () => { location.hash = ""; });
 $("refresh").addEventListener("click", loadEpisodes);
 $("mark-done").addEventListener("click", () => setDone(current.guid, !isDone(current.guid)));
 
+// ---------- autoplay next (off by default, remembered per device) ----------
+// When an episode ends, open and play the next one in release order (the next
+// newer episode of the same show). Stops after the newest episode.
+let autoplayNext = localStorage.getItem("autoplayNext") === "1";
+let autoplayOnOpen = false; // set just before routing to the next episode
+
+function updateAutoplayButton() {
+  $("autoplay").textContent = `Autoplay next: ${autoplayNext ? "On" : "Off"}`;
+  $("autoplay").setAttribute("aria-pressed", String(autoplayNext));
+}
+updateAutoplayButton();
+$("autoplay").addEventListener("click", () => {
+  autoplayNext = !autoplayNext;
+  localStorage.setItem("autoplayNext", autoplayNext ? "1" : "0");
+  updateAutoplayButton();
+});
+
+function playNextEpisode() {
+  const i = episodes.findIndex((e) => e.guid === current?.guid);
+  const next = i > 0 ? episodes[i - 1] : null; // the list is newest first
+  if (!next) return;
+  autoplayOnOpen = true;
+  location.hash = `ep=${encodeURIComponent(next.guid)}&show=${next.show}`;
+}
+
 // Seek bar: preview while dragging, seek when released.
 seek.addEventListener("input", () => {
   dragging = true;
@@ -707,7 +736,13 @@ audio.addEventListener("play", () => { updatePlayButton(); updatePositionState()
 audio.addEventListener("pause", () => { setBusy(false); updatePlayButton(); savePos(); });
 audio.addEventListener("waiting", () => { if (!audio.paused) setBusy(true); });
 audio.addEventListener("playing", () => setBusy(false));
-audio.addEventListener("ended", () => { setBusy(false); updatePlayButton(); savePos(); setDone(current.guid, true); });
+audio.addEventListener("ended", () => {
+  setBusy(false);
+  updatePlayButton();
+  savePos();
+  setDone(current.guid, true);
+  if (autoplayNext) playNextEpisode();
+});
 audio.addEventListener("error", () => {
   setBusy(false);
   updateLoading(true);

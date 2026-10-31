@@ -58,6 +58,32 @@ button:focus-visible, input:focus-visible, a:focus-visible {
   text-overflow: ellipsis;
 }
 
+/* Version light right after the list title (see update.js); the title shrinks instead of
+   filling the bar so the dot sits next to it, and the dot's margin pushes the icons right. */
+#list-title { flex: 0 1 auto; }
+.version {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 44px;
+  margin-right: auto;
+  padding: 0 6px;
+  border-radius: 999px;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+.version i {
+  flex: none;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  border: 2px solid var(--muted);
+}
+.version[data-state="ok"] i { background: #2da44e; border-color: #2da44e; }
+.version[data-state="stale"] { min-height: 0; margin-block: 7px; padding: 4px 10px; border: 1px solid #d97706; color: #d97706; font-weight: 600; }
+.version[data-state="stale"] i { background: #d97706; border-color: #d97706; }
+.version[data-state="updating"] i { border-color: #d97706; border-top-color: transparent; animation: spin 0.8s linear infinite; }
+
 .icon-btn {
   min-width: 44px;
   min-height: 44px;

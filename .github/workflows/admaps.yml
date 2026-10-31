@@ -29,7 +29,7 @@ jobs:
       - name: Build missing maps
         # No H&A: Omny picks ads by location, and from GitHub's US runners it mostly serves
         # none (or US ads at different spots), so the maps would be wrong for Australia.
-        # Build H&A maps locally: python3 tools/admap.py --shows handa
+        # New H&A episodes use Ads.detect instead (~4s slower to load; Alex is fine with that).
         run: python3 tools/admap.py --shows lemonade triforce --limit "${{ github.event.inputs.limit || '10' }}"
       - name: Commit new maps
         env:

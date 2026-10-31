@@ -36,7 +36,8 @@ SHOWS = {
     "lemonade": {"rss": "https://feeds.megaphone.fm/VMP5629614579"},
     "triforce": {"rss": "https://feeds.megaphone.fm/NSR9016694791"},
     # Omny (H&A): every browser-like UA gets the same ads, and curl gets the ad-free
-    # file, so one copy of each pins down the show exactly.
+    # file, so one copy of each pins down the show exactly. Ads depend on location, so
+    # build these from Australia (not GitHub Actions, whose US runners get other ads).
     "handa": {
         "itunes": "https://itunes.apple.com/lookup?id=213334232&media=podcast&entity=podcastEpisode&limit=200",
         "uas": ["Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Mobile Safari/537.36",

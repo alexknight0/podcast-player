@@ -27,7 +27,10 @@ jobs:
         with:
           python-version: "3.12"
       - name: Build missing maps
-        run: python3 tools/admap.py --limit "${{ github.event.inputs.limit || '10' }}"
+        # No H&A: Omny picks ads by location, and from GitHub's US runners it mostly serves
+        # none (or US ads at different spots), so the maps would be wrong for Australia.
+        # Build H&A maps locally: python3 tools/admap.py --shows handa
+        run: python3 tools/admap.py --shows lemonade triforce --limit "${{ github.event.inputs.limit || '10' }}"
       - name: Commit new maps
         env:
           # Needed for both the commit and the rebase (which rewrites it as a new commit).

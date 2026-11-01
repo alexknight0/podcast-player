@@ -263,6 +263,7 @@ $("show-tabs").replaceChildren(...Object.entries(SHOWS).map(([key, cfg]) => {
 
 function renderList() {
   const ul = $("episodes");
+  const latest = latestGuid();
   ul.replaceChildren(
     ...episodes.map((ep) => {
       const pos = getPos(ep.guid);
@@ -273,17 +274,18 @@ function renderList() {
       if (!done && pos > 0) progress = ` · ${fmtDuration(Math.max(0, len - pos))} left`;
       const meta = el("span", { className: "ep-meta", textContent: `${fmtDate(ep.date)} · ${fmtDuration(len)}${progress}` });
       if (done) meta.append(" · ", el("span", { className: "played-tag", textContent: "✓ Played" }));
-      const btn = el("button", { type: "button" },
-        el("span", { className: "ep-name", textContent: ep.title }),
-        meta,
-      );
+      const name = el("span", { className: "ep-name" });
+      // The episode listened to most recently (what "Last watched episode" jumps to).
+      if (ep.guid === latest) name.append(el("span", { className: "last-tag", textContent: "Last played" }), " ");
+      name.append(ep.title);
+      const btn = el("button", { type: "button" }, name, meta);
       if (pct > 0 && !done) {
         const bar = el("span", { className: "ep-progress" }, el("span"));
         bar.firstChild.style.width = `${pct}%`;
         btn.append(bar);
       }
       btn.addEventListener("click", () => { location.hash = `ep=${encodeURIComponent(ep.guid)}&show=${ep.show}`; });
-      const li = el("li", { className: done ? "done" : "" }, btn);
+      const li = el("li", { className: [done && "done", ep.guid === latest && "latest"].filter(Boolean).join(" ") }, btn);
       li.dataset.guid = ep.guid;
       return li;
     }),
@@ -299,13 +301,18 @@ function renderList() {
 // The list row of this show's most recently listened-to episode (newest progress `t`
 // with a position or played), or null.
 function latestRow() {
+  const guid = latestGuid();
+  return (guid && [...$("episodes").children].find((n) => n.dataset.guid === guid)) || null;
+}
+
+function latestGuid() {
   let latest = null;
   let latestT = 0;
   for (const ep of episodes) {
     const p = Progress.get(ep.guid);
     if ((p.pos > 0 || p.done) && p.t > latestT) [latest, latestT] = [ep.guid, p.t];
   }
-  return (latest && [...$("episodes").children].find((n) => n.dataset.guid === latest)) || null;
+  return latest;
 }
 
 // "Last watched" button: shown when that row is more than a screen away from the middle

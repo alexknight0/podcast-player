@@ -381,29 +381,23 @@ button:focus-visible, input:focus-visible, a:focus-visible {
 .chapters li.active button { background: var(--panel); }
 .chapters li.active .ch-title { color: var(--accent); font-weight: 600; }
 
-/* Password gate */
+/* Sign-in gate */
 body.locked .view { display: none; }
 body:not(.locked) .gate { display: none; }
 
 .gate {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 12px;
   max-width: 320px;
   margin: 25vh auto 0;
   padding: 0 16px;
+  text-align: center;
 }
 
-.gate h1 { margin: 0 0 8px; text-align: center; }
-
-.gate input {
-  font: inherit;
-  padding: 12px;
-  border-radius: 8px;
-  border: 1px solid var(--muted);
-  background: var(--panel);
-  color: var(--text);
-}
+.gate h1 { margin: 0; }
+.gate-msg { margin: 0; color: var(--muted); }
+.gate-msg.error { color: #ff8a80; }
 
 .gate button {
   min-height: 44px;
@@ -412,8 +406,7 @@ body:not(.locked) .gate { display: none; }
   color: var(--accent-text);
   font-weight: 700;
 }
-
-.gate-error { min-height: 1.4em; margin: 0; color: #ff8a80; text-align: center; }
+.gate button.secondary { background: var(--panel); color: var(--text); font-weight: 400; }
 
 /* Sync */
 .sync-btn { color: var(--muted); }

@@ -11,14 +11,14 @@
   <link rel="stylesheet" href="style.css">
 </head>
 <body class="locked">
-  <!-- Password gate: a "tinted window" to keep casual visitors out, NOT real security. -->
-  <form id="gate" class="gate" autocomplete="off">
-    <h1>Podcast Player</h1>
-    <label for="gate-pw">Password</label>
-    <input id="gate-pw" type="password" autocomplete="current-password" required>
-    <button type="submit">Enter</button>
-    <p id="gate-error" class="gate-error" role="alert"></p>
-  </form>
+  <!-- Sign-in gate: only approved Google accounts (firestore.rules + config/access) get in.
+       sync.js decides; the app starts once the account is approved. -->
+  <section id="gate" class="gate" aria-labelledby="gate-title">
+    <h1 id="gate-title">Podcast Player</h1>
+    <p id="gate-msg" class="gate-msg" role="status">Checking sign-in…</p>
+    <button id="gate-signin" type="button" hidden>Sign in with Google</button>
+    <button id="gate-signout" type="button" class="secondary" hidden>Use a different account</button>
+  </section>
 
   <!-- Episode list view -->
   <main id="list-view" class="view">
@@ -88,10 +88,9 @@
   <dialog id="sync-dialog" class="sync-dialog" aria-labelledby="sync-title">
     <h2 id="sync-title">Sync between devices</h2>
     <p id="sync-status" class="sync-status" role="status"></p>
-    <p>Sign in with the same Google account on each device to keep listening progress in sync.</p>
+    <p>Listening progress syncs between every device signed in to this account.</p>
     <div class="sync-actions">
-      <button id="sync-signin" type="button" class="primary">Sign in with Google</button>
-      <button id="sync-signout" type="button" hidden>Sign out</button>
+      <button id="sync-signout" type="button">Sign out</button>
       <button id="sync-close" type="button">Close</button>
     </div>
   </dialog>

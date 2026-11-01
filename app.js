@@ -520,7 +520,7 @@ function updateAdBadge() {
     state = "requested";
     text = "Ad detection requested. It usually takes 15–30 minutes; ads are skipped as soon as it's done.";
   } else if (!AdRequests.send) {
-    text = "Ad detection hasn't run on this episode. Sign in to sync (☁ on the episode list) to request it.";
+    text = "Ad detection hasn't run on this episode. Requests need a connection to sync (☁ on the episode list); try again shortly.";
   } else if (req?.status === "failed") {
     text = `Ad detection failed (${req.error || "unknown error"}). Tap to try again.`;
   } else {
@@ -960,33 +960,18 @@ async function route() {
   updateJumpButton();
 }
 
-// ---------- password gate ----------
-// Cosmetic only: keeps casual visitors from seeing the content. Anyone can read
-// this source (or the public podcast feed) directly.
-const PASSWORD = "alex";
-const UNLOCK_KEY = "unlocked";
+// ---------- start-up ----------
+// sync.js calls startApp() once the signed-in Google account is approved (see the gate in
+// index.html). Nothing is shown before that.
+let started = false;
 
 function startApp() {
+  if (started) return;
+  started = true;
   history.scrollRestoration = "manual"; // the list scrolls itself to the latest episode; don't let a reload undo it
   scrollPending = true;
   document.body.classList.remove("locked");
   window.addEventListener("hashchange", route);
   setShow(show);
   route();
-}
-
-if (localStorage.getItem(UNLOCK_KEY) === "1") {
-  startApp();
-} else {
-  $("gate-pw").focus();
-  $("gate").addEventListener("submit", (e) => {
-    e.preventDefault();
-    if ($("gate-pw").value === PASSWORD) {
-      localStorage.setItem(UNLOCK_KEY, "1"); // remember on this device
-      startApp();
-    } else {
-      $("gate-error").textContent = "Wrong password.";
-      $("gate-pw").select();
-    }
-  });
 }

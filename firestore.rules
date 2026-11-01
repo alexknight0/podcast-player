@@ -1,10 +1,32 @@
 rules_version = '2';
 
-// Each signed-in Google account can only read/write its own progress document.
+// Only approved Google accounts can use the player: Alex (the admin) always, everyone else
+// only if their email (lower-case) is in config/access.emails, which only Alex can read or
+// edit. Each approved account can only read/write its own progress document.
+// (The ad map workflow reads users/* through a service account, which bypasses these rules.)
 service cloud.firestore {
   match /databases/{database}/documents {
+    function signedIn() {
+      return request.auth != null && request.auth.token.email_verified == true;
+    }
+    function email() {
+      return request.auth.token.email.lower();
+    }
+    function isAdmin() {
+      return signedIn() && email() == 'octopus0246@gmail.com';
+    }
+    function approved() {
+      return isAdmin() || (signedIn()
+        && exists(/databases/$(database)/documents/config/access)
+        && email() in get(/databases/$(database)/documents/config/access).data.emails);
+    }
+
+    match /config/access {
+      allow read, write: if isAdmin();
+    }
+
     match /users/{uid} {
-      allow read, write: if request.auth != null && request.auth.uid == uid;
+      allow read, write: if approved() && request.auth.uid == uid;
     }
   }
 }

@@ -1,5 +1,6 @@
 // Sync listening progress between devices with Firebase (Google sign-in + Firestore).
-// Progress is stored at users/{uid} as { progress: { <guid>: {pos, done, t} } }.
+// Progress is stored at users/{uid} as { progress: { <guid>: {pos, done, t} } }, with
+// ad map requests alongside as { adRequests: { <guid>: {...} } } (see AdRequests in app.js).
 // firestore.rules restricts each account to its own document.
 import { initializeApp } from "https://www.gstatic.com/firebasejs/13.0.0/firebase-app.js";
 import {
@@ -49,6 +50,8 @@ onAuthStateChanged(auth, (user) => {
   if (unsubscribe) unsubscribe();
   unsubscribe = null;
   Progress.detach();
+  AdRequests.send = null;
+  AdRequests.apply({});
   if (!user) return setState("off");
 
   const ref = doc(db, "users", user.uid);
@@ -57,12 +60,17 @@ onAuthStateChanged(auth, (user) => {
       await setDoc(ref, { progress: entries }, { merge: true });
     },
   });
+  // Ad map requests (tap on "AD ?"); built and cleared by .github/workflows/admap-requests.yml.
+  AdRequests.send = (ep) => setDoc(ref, {
+    adRequests: { [ep.guid]: { show: ep.show, title: ep.title, status: "pending", t: Date.now() } },
+  }, { merge: true });
   setState("syncing");
   // Live updates: changes from other devices arrive here within a second or two.
   unsubscribe = onSnapshot(
     ref,
     (snap) => {
       Progress.applyRemote(snap.data()?.progress || {});
+      AdRequests.apply(snap.data()?.adRequests || {});
       setState("ok");
     },
     (err) => setState("error", `Sync failed: ${err.message}`),

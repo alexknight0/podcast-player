@@ -164,10 +164,12 @@ const Ads = (() => {
     if (!mapCache.has(guid)) mapCache.set(guid, fetchMap(guid).catch(() => { mapCache.delete(guid); return null; }));
     return mapCache.get(guid);
   }
+  // Drop a cached "no map" so the next prefetchMap() asks the server again (after a requested build).
+  const forgetMap = (guid) => mapCache.delete(guid);
 
   async function fetchMap(guid) {
     const name = guid.replace(/[^A-Za-z0-9_-]/g, "_");
-    const resp = await fetch(`admaps/${name}.json`);
+    const resp = await fetch(`admaps/${name}.json`, { cache: "no-cache" }); // revalidate: a map may have been added since
     if (!resp.ok) return null; // not built (yet) for this episode
     const m = await resp.json();
     const raw = Uint8Array.from(atob(m.hashes), (ch) => ch.charCodeAt(0));
@@ -334,5 +336,5 @@ const Ads = (() => {
     return ads;
   }
 
-  return { detect, detectMapped, prefetchMap };
+  return { detect, detectMapped, prefetchMap, forgetMap };
 })();

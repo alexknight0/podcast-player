@@ -21,11 +21,13 @@ import argparse
 import base64
 import concurrent.futures
 import json
+import os
 import pathlib
 import re
 import struct
 import sys
 import time
+import urllib.error
 import urllib.request
 import xml.etree.ElementTree as ET
 import zlib
@@ -245,6 +247,101 @@ def summary(m):
             f"ads per copy {m['ads']}")
 
 
+# ---------- requests from the player (tap on "AD ?") ----------
+# The player stores requests in Firestore, in the signed-in user's progress document:
+#   users/{uid}.adRequests.<guid> = {show, title, status: "pending" | "failed", error?, t}
+# .github/workflows/admap-requests.yml checks for pending ones every 15 minutes, builds
+# their maps (--requests), commits them, then clears the requests (--finish-requests).
+# Only uids listed in REQUEST_UIDS count, so other Google accounts can't start builds.
+FIRESTORE = "https://firestore.googleapis.com/v1/projects/handa-player-553cb2/databases/(default)/documents"
+
+
+def firestore(method, path, body=None):
+    req = urllib.request.Request(
+        f"{FIRESTORE}/{path}", method=method,
+        data=None if body is None else json.dumps(body).encode(),
+        headers={"Authorization": f"Bearer {os.environ['FIRESTORE_TOKEN']}", "Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=30) as r:
+        return json.loads(r.read() or b"{}")
+
+
+def decode(v):
+    """Firestore REST value -> Python value (the types the player writes)."""
+    if "mapValue" in v:
+        return {k: decode(x) for k, x in v["mapValue"].get("fields", {}).items()}
+    for key in ("stringValue", "booleanValue", "doubleValue"):
+        if key in v:
+            return v[key]
+    if "integerValue" in v:
+        return int(v["integerValue"])
+    return None
+
+
+def pending_requests():
+    uids = {u.strip() for u in os.environ.get("REQUEST_UIDS", "").split(",") if u.strip()}
+    found = []
+    for uid in sorted(uids):
+        try:
+            doc = firestore("GET", f"users/{uid}?mask.fieldPaths=adRequests")
+        except urllib.error.HTTPError as err:
+            if err.code == 404:
+                continue
+            raise
+        for guid, r in decode({"mapValue": doc}).get("adRequests", {}).items():
+            if isinstance(r, dict) and r.get("status") == "pending":
+                found.append({"uid": uid, "guid": guid, "show": r.get("show", "")})
+    return found
+
+
+def set_request(uid, guid, value):
+    """Replace users/{uid}.adRequests.<guid> with `value` (None deletes it)."""
+    path = f"users/{uid}?updateMask.fieldPaths=adRequests.`{guid}`&currentDocument.exists=true"
+    fields = {}
+    if value is not None:
+        enc = {k: ({"integerValue": str(x)} if isinstance(x, int) else {"stringValue": str(x)}) for k, x in value.items()}
+        fields = {"adRequests": {"mapValue": {"fields": {guid: {"mapValue": {"fields": enc}}}}}}
+    firestore("PATCH", path, {"fields": fields})
+
+
+def build_requests(results_path, max_new):
+    requests = pending_requests()
+    log(f"{len(requests)} pending request(s)")
+    results = []
+    feeds = {}
+    for i, r in enumerate(requests[:max_new], 1):
+        guid, show = r["guid"], r["show"]
+        log(f"  {i}/{len(requests)}: {show} {guid}")
+        res = {**r, "ok": False}
+        try:
+            if show not in SHOWS or not SHOWS[show].get("rss"):
+                raise ValueError("ad maps for this show can't be built automatically")
+            if (OUT_DIR / f"{safe_name(guid)}.json").exists():
+                log("    already has a map")
+            else:
+                feeds.setdefault(show, list(feed_items(show)))
+                item = next((it for it in feeds[show] if it["guid"] == guid), None)
+                if not item:
+                    raise ValueError("episode not found in the feed")
+                started = time.time()
+                m = process(show, item, OUT_DIR)
+                log(f"    {item['title']}: {summary(m)} ({time.time() - started:.0f}s)")
+            res["ok"] = True
+        except Exception as err:
+            res["error"] = str(err)[:200]
+            log(f"    failed: {res['error']}")
+        results.append(res)
+    pathlib.Path(results_path).write_text(json.dumps(results))
+
+
+def finish_requests(results_path):
+    """After the maps are pushed: clear built requests, mark failed ones."""
+    results = json.loads(pathlib.Path(results_path).read_text())
+    for r in results:
+        value = None if r["ok"] else {"show": r["show"], "status": "failed", "error": r["error"], "t": int(time.time() * 1000)}
+        set_request(r["uid"], r["guid"], value)
+        log(f"{r['guid']}: {'done' if r['ok'] else 'marked failed'}")
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--shows", nargs="*", default=list(SHOWS), choices=list(SHOWS))
@@ -252,8 +349,15 @@ def main():
     ap.add_argument("--max-new", type=int, default=40, help="stop after building this many maps in one run")
     ap.add_argument("--files", nargs="+", help="build one map from local copies instead (testing)")
     ap.add_argument("--guid", help="guid for --files")
+    ap.add_argument("--requests", metavar="RESULTS", help="build maps requested from the player (Firestore); write results here")
+    ap.add_argument("--finish-requests", metavar="RESULTS", help="update the Firestore requests from a --requests results file")
     args = ap.parse_args()
     OUT_DIR.mkdir(exist_ok=True)
+
+    if args.requests:
+        return build_requests(args.requests, args.max_new)
+    if args.finish_requests:
+        return finish_requests(args.finish_requests)
 
     if args.files:
         readers = []

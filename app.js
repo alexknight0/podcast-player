@@ -13,8 +13,10 @@ const SHOWS = {
     ads: true,
     admaps: true,
   },
-  lemonade: { name: "Lemonade Stand", rss: "https://feeds.megaphone.fm/VMP5629614579", admaps: true },
-  triforce: { name: "Triforce!", rss: "https://feeds.megaphone.fm/NSR9016694791", admaps: true },
+  // `requests`: tapping "AD ?" can ask GitHub Actions to build the episode's ad map (not
+  // H&A: Omny gives GitHub's US runners different ads, see tools/admap.py).
+  lemonade: { name: "Lemonade Stand", rss: "https://feeds.megaphone.fm/VMP5629614579", admaps: true, requests: true },
+  triforce: { name: "Triforce!", rss: "https://feeds.megaphone.fm/NSR9016694791", admaps: true, requests: true },
 };
 const DEFAULT_SHOW = "handa";
 const SKIP_SECONDS = 10;
@@ -321,7 +323,7 @@ function updateJumpButton() {
   // Sits on the side it will scroll towards: bottom when the row is further down, top when it's up.
   const down = offset > 0;
   btn.classList.toggle("up", !down);
-  btn.style.top = down ? "" : `${$("list-view").querySelector(".bar").getBoundingClientRect().bottom + 12}px`;
+  btn.style.top = down ? "" : `${$("list-view").querySelector(".list-head").getBoundingClientRect().bottom + 12}px`;
   btn.textContent = `${down ? "↓" : "↑"} Last watched episode`;
 }
 
@@ -329,7 +331,23 @@ let jumpFrame = 0;
 const scheduleJumpUpdate = () => { jumpFrame ||= requestAnimationFrame(() => { jumpFrame = 0; updateJumpButton(); }); };
 window.addEventListener("scroll", scheduleJumpUpdate, { passive: true });
 window.addEventListener("resize", scheduleJumpUpdate);
-$("jump-latest").addEventListener("click", () => latestRow()?.scrollIntoView({ block: "center", behavior: "smooth" }));
+$("jump-latest").addEventListener("click", () => {
+  const li = latestRow();
+  if (!li) return;
+  li.scrollIntoView({ block: "center", behavior: "smooth" });
+  // Flash the row once the smooth scroll stops (fallback timer in case `scrollend` doesn't fire).
+  let timer = 0;
+  const flash = () => {
+    clearTimeout(timer);
+    removeEventListener("scrollend", flash);
+    li.classList.remove("flash");
+    void li.offsetWidth; // restart the animation if it's still running
+    li.classList.add("flash");
+    li.addEventListener("animationend", () => li.classList.remove("flash"), { once: true });
+  };
+  addEventListener("scrollend", flash, { once: true });
+  timer = setTimeout(flash, 3000);
+});
 
 // ---------- player ----------
 
@@ -486,16 +504,73 @@ function updateLoading(failed = false) {
 }
 
 // "AD" badge between the times: whether ad detection has run on this episode.
-// The tooltip shows on hover, or on tap (focus) on phones.
+// The tooltip shows on hover, or on tap (focus) on phones. On shows with `requests`,
+// tapping "AD ?" while signed in asks for the episode's ad map to be built.
 function updateAdBadge() {
   const badge = $("ad-badge");
   const n = ads.length;
-  const text = adsDetected
-    ? n ? `Ad detection has run: ${n} ad break${n === 1 ? "" : "s"} skipped.` : "Ad detection has run: no ads found."
-    : "Ad detection hasn't run on this episode. Contact the website owner if you want it run.";
-  badge.dataset.state = adsDetected ? "on" : "off";
+  const req = current && AdRequests.all[current.guid];
+  let state = adsDetected ? "on" : "off";
+  let text;
+  if (adsDetected) {
+    text = n ? `Ad detection has run: ${n} ad break${n === 1 ? "" : "s"} skipped.` : "Ad detection has run: no ads found.";
+  } else if (!current || !SHOWS[current.show].requests) {
+    text = "Ad detection hasn't run on this episode. Contact the website owner if you want it run.";
+  } else if (req?.status === "pending") {
+    state = "requested";
+    text = "Ad detection requested. It usually takes 15–30 minutes; ads are skipped as soon as it's done.";
+  } else if (!AdRequests.send) {
+    text = "Ad detection hasn't run on this episode. Sign in to sync (☁ on the episode list) to request it.";
+  } else if (req?.status === "failed") {
+    text = `Ad detection failed (${req.error || "unknown error"}). Tap to try again.`;
+  } else {
+    text = "Ad detection hasn't run on this episode. Tap to request it.";
+  }
+  badge.dataset.state = state;
   badge.setAttribute("aria-label", text);
   $("ad-tip").textContent = text;
+}
+
+// Ad map requests, stored with the progress in Firestore (users/{uid}.adRequests) by
+// sync.js; .github/workflows/admap-requests.yml builds them and clears each one.
+const AdRequests = {
+  all: {},    // guid -> {show, title, status: "pending" | "failed", error?, t}
+  send: null, // (ep) => Promise, set by sync.js while signed in
+  // Called by sync.js with the latest requests from Firestore.
+  apply(next) {
+    const prev = this.all;
+    this.all = next;
+    // The current episode's request was just cleared (built): fetch the new map and detect.
+    if (current && prev[current.guid]?.status === "pending" && !next[current.guid]) awaitNewMap(current);
+    updateAdBadge();
+  },
+};
+
+$("ad-badge").addEventListener("click", async () => {
+  if (!current || adsDetected || !SHOWS[current.show].requests || !AdRequests.send) return;
+  if (AdRequests.all[current.guid]?.status === "pending") return;
+  const ep = current;
+  AdRequests.all = { ...AdRequests.all, [ep.guid]: { status: "pending" } };
+  updateAdBadge();
+  try {
+    await AdRequests.send(ep);
+  } catch (err) {
+    AdRequests.all = { ...AdRequests.all, [ep.guid]: { status: "failed", error: `couldn't send the request: ${err.message}` } };
+    updateAdBadge();
+  }
+});
+
+// The map is pushed just before the request is cleared, but GitHub Pages takes about a
+// minute to publish it: retry every 20s for up to 5 minutes, then run detection again.
+async function awaitNewMap(ep) {
+  for (let i = 0; i < 15 && current === ep; i++) {
+    Ads.forgetMap(ep.guid);
+    if (await Ads.prefetchMap(ep.guid)) {
+      if (current === ep && !adsDetected && chapterAbort) detectAds(ep, chapterAbort.signal);
+      return;
+    }
+    await new Promise((r) => setTimeout(r, 20000));
+  }
 }
 
 // Spinner on the play button while audio is buffering.

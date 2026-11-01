@@ -22,6 +22,8 @@
 
   <!-- Episode list view -->
   <main id="list-view" class="view">
+    <!-- Title bar and show tabs stay at the top while the list scrolls -->
+    <div class="list-head">
     <header class="bar">
       <h1 id="list-title">Hamish &amp; Andy</h1>
       <button id="version" type="button" class="version" data-state="checking" aria-label="Checking for updates…" title="Checking for updates…"><i></i><span></span></button>
@@ -29,6 +31,7 @@
       <button id="refresh" class="icon-btn" aria-label="Refresh episode list">⟳</button>
     </header>
     <nav id="show-tabs" class="show-tabs" aria-label="Podcast"></nav>
+    </div>
     <p id="list-status" class="status" role="status">Loading episodes…</p>
     <ul id="episodes" class="episodes"></ul>
     <button id="jump-latest" class="jump-latest" type="button" hidden>↓ Last watched episode</button>

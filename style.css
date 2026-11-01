@@ -91,6 +91,9 @@ button:focus-visible, input:focus-visible, a:focus-visible {
   border-radius: 50%;
 }
 
+/* List view: title bar + show tabs stick together (the .bar inside doesn't stick on its own) */
+.list-head { position: sticky; top: 0; z-index: 1; }
+
 /* Show switcher under the list header */
 .show-tabs {
   display: flex;
@@ -149,6 +152,13 @@ button:focus-visible, input:focus-visible, a:focus-visible {
 .episodes li.done .ep-name { color: var(--muted); font-weight: 500; }
 .episodes li.done button { opacity: 0.6; }
 .played-tag { color: #2da44e; font-weight: 700; }
+
+/* Flash on the row "Last watched episode" scrolled to */
+.episodes li.flash button { animation: row-flash 2.4s ease-out; }
+@keyframes row-flash {
+  0%, 35% { background: rgba(77, 171, 247, 0.3); box-shadow: inset 4px 0 0 var(--accent); }
+  100% { background: transparent; box-shadow: inset 4px 0 0 transparent; }
+}
 
 /* Floating "Last watched episode" button (see updateJumpButton in app.js) */
 .jump-latest {
@@ -290,6 +300,8 @@ button:focus-visible, input:focus-visible, a:focus-visible {
 .ad-badge[data-state="on"] > span:first-child::after { content: " ✓"; }
 .ad-badge[data-state="off"] { color: var(--muted); border-style: dashed; }
 .ad-badge[data-state="off"] > span:first-child::after { content: " ?"; }
+.ad-badge[data-state="requested"] { color: #d97706; border-style: dashed; }
+.ad-badge[data-state="requested"] > span:first-child::after { content: " …"; }
 
 .ad-tip {
   position: absolute;

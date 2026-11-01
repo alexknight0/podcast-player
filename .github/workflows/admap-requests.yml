@@ -1,0 +1,54 @@
+# Builds ad maps that were requested from the player (tapping "AD ?" while signed in).
+# Requests live in Firestore (users/{uid}.adRequests); see tools/admap.py.
+# GitHub signs in to Google Cloud with workload identity federation (no stored key):
+# pool "github", provider "podcast-player" (only this repo), service account
+# admap-requests@ with roles/datastore.user on the handa-player-553cb2 project.
+name: Ad map requests
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  id-token: write # for the Google Cloud sign-in
+
+concurrency:
+  group: admaps
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      REQUEST_UIDS: 0jSw2qFIwdUAHuZBGk8MxH9TqAC3 # Alex (octopus0246@gmail.com)
+    steps:
+      - uses: actions/checkout@v5
+      - id: gcp
+        uses: google-github-actions/auth@v3
+        with:
+          workload_identity_provider: projects/408789063169/locations/global/workloadIdentityPools/github/providers/podcast-player
+          service_account: admap-requests@handa-player-553cb2.iam.gserviceaccount.com
+          token_format: access_token
+          create_credentials_file: false
+      - name: Build requested maps
+        env:
+          FIRESTORE_TOKEN: ${{ steps.gcp.outputs.access_token }}
+        run: python3 tools/admap.py --requests "$RUNNER_TEMP/requests.json" --max-new 10
+      - name: Commit new maps
+        env:
+          GIT_AUTHOR_NAME: github-actions[bot]
+          GIT_AUTHOR_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+          GIT_COMMITTER_NAME: github-actions[bot]
+          GIT_COMMITTER_EMAIL: 41898282+github-actions[bot]@users.noreply.github.com
+        run: |
+          git add admaps
+          if git diff --cached --quiet; then echo "No new maps"; exit 0; fi
+          git commit -m "Add requested ad maps"
+          git pull --rebase origin main
+          git push origin HEAD:main
+      - name: Clear requests
+        env:
+          FIRESTORE_TOKEN: ${{ steps.gcp.outputs.access_token }}
+        run: python3 tools/admap.py --finish-requests "$RUNNER_TEMP/requests.json"

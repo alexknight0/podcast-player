@@ -36,7 +36,8 @@ let resumeAt = null;    // episode-time position to apply once the audio (and ad
 let adsSettled = false; // ad detection finished (or isn't possible) for `current`
 let adsDetected = false; // detection actually ran on `current` (ads, if any, are known and skipped)
 let streamInfo = null;  // { url, tagSize } from the ID3 read, used for ad detection
-let scrollPending = false; // next list render centres the most recently listened-to episode (set when the list is opened)
+let scrollPending = false; // next list render centres the most recently listened-to episode (only when the app starts)
+let listY = null;          // list scroll position when an episode was opened, restored on the way back
 
 // ---------- time model ----------
 // The stream served to browsers has ads stitched in, but chapter times, the
@@ -245,8 +246,9 @@ function setShow(key) {
   episodes = cachedEpisodes(key);
   setStatus($("list-status"), episodes.length ? "" : "Loading episodes…", true);
   $("refresh").classList.toggle("spinning", Boolean(inflight[key]));
-  scrollPending = true;
-  renderList();
+  listY = null;
+  window.scrollTo(0, 0);
+  renderList(); // centres the latest episode instead, on start-up
   loadEpisodes();
 }
 
@@ -284,23 +286,43 @@ function renderList() {
       return li;
     }),
   );
-  if (scrollPending && episodes.length) {
+  if (scrollPending && episodes.length && !$("list-view").hidden) {
     scrollPending = false;
-    scrollToLatest();
+    const li = latestRow();
+    if (li) li.scrollIntoView({ block: "center" });
   }
+  updateJumpButton();
 }
 
-function scrollToLatest() {
+// The list row of this show's most recently listened-to episode (newest progress `t`
+// with a position or played), or null.
+function latestRow() {
   let latest = null;
   let latestT = 0;
   for (const ep of episodes) {
     const p = Progress.get(ep.guid);
     if ((p.pos > 0 || p.done) && p.t > latestT) [latest, latestT] = [ep.guid, p.t];
   }
-  const li = latest && [...$("episodes").children].find((n) => n.dataset.guid === latest);
-  if (li) li.scrollIntoView({ block: "center" });
-  else window.scrollTo(0, 0);
+  return (latest && [...$("episodes").children].find((n) => n.dataset.guid === latest)) || null;
 }
+
+// "Last watched" button: shown when that row is more than a screen away from the middle
+// of the screen.
+function updateJumpButton() {
+  const li = $("list-view").hidden ? null : latestRow();
+  let far = false;
+  if (li) {
+    const r = li.getBoundingClientRect();
+    far = Math.abs(r.top + r.height / 2 - innerHeight / 2) > innerHeight;
+  }
+  $("jump-latest").hidden = !far;
+}
+
+let jumpFrame = 0;
+const scheduleJumpUpdate = () => { jumpFrame ||= requestAnimationFrame(() => { jumpFrame = 0; updateJumpButton(); }); };
+window.addEventListener("scroll", scheduleJumpUpdate, { passive: true });
+window.addEventListener("resize", scheduleJumpUpdate);
+$("jump-latest").addEventListener("click", () => latestRow()?.scrollIntoView({ block: "center", behavior: "smooth" }));
 
 // ---------- player ----------
 
@@ -840,6 +862,7 @@ async function route() {
     if (!episodes.length) await loadEpisodes();
     const ep = episodes.find((e) => e.guid === guid);
     if (ep) {
+      if (!$("list-view").hidden) listY = scrollY; // restored on the way back
       $("list-view").hidden = true;
       $("player-view").hidden = false;
       window.scrollTo(0, 0);
@@ -850,8 +873,9 @@ async function route() {
   $("player-view").hidden = true;
   $("list-view").hidden = false;
   document.title = SHOWS[show].name;
-  scrollPending = true;
   renderList(); // refresh "listened" progress
+  if (listY !== null) window.scrollTo(0, listY);
+  updateJumpButton();
 }
 
 // ---------- password gate ----------
@@ -862,6 +886,7 @@ const UNLOCK_KEY = "unlocked";
 
 function startApp() {
   history.scrollRestoration = "manual"; // the list scrolls itself to the latest episode; don't let a reload undo it
+  scrollPending = true;
   document.body.classList.remove("locked");
   window.addEventListener("hashchange", route);
   setShow(show);

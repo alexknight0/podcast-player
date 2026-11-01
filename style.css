@@ -150,6 +150,24 @@ button:focus-visible, input:focus-visible, a:focus-visible {
 .episodes li.done button { opacity: 0.6; }
 .played-tag { color: #2da44e; font-weight: 700; }
 
+/* Floating "Last watched episode" button (see updateJumpButton in app.js) */
+.jump-latest {
+  position: fixed;
+  left: 50%;
+  bottom: calc(20px + env(safe-area-inset-bottom));
+  transform: translateX(-50%);
+  z-index: 2;
+  min-height: 44px;
+  padding: 0 18px;
+  border-radius: 22px;
+  background: var(--accent);
+  color: var(--accent-text);
+  font-weight: 700;
+  font-size: 0.9rem;
+  white-space: nowrap;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5);
+}
+
 .mark-done {
   display: block;
   margin: 20px auto 0;

@@ -167,6 +167,7 @@ button:focus-visible, input:focus-visible, a:focus-visible {
   white-space: nowrap;
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5);
 }
+.jump-latest.up { bottom: auto; } /* `top` is set from the header's height in app.js */
 
 .mark-done {
   display: block;

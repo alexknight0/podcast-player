@@ -310,12 +310,19 @@ function latestRow() {
 // of the screen.
 function updateJumpButton() {
   const li = $("list-view").hidden ? null : latestRow();
-  let far = false;
+  const btn = $("jump-latest");
+  let offset = 0; // how far the row's centre is below (+) or above (−) the screen centre
   if (li) {
     const r = li.getBoundingClientRect();
-    far = Math.abs(r.top + r.height / 2 - innerHeight / 2) > innerHeight;
+    offset = r.top + r.height / 2 - innerHeight / 2;
   }
-  $("jump-latest").hidden = !far;
+  btn.hidden = Math.abs(offset) <= innerHeight;
+  if (btn.hidden) return;
+  // Sits on the side it will scroll towards: bottom when the row is further down, top when it's up.
+  const down = offset > 0;
+  btn.classList.toggle("up", !down);
+  btn.style.top = down ? "" : `${$("list-view").querySelector(".bar").getBoundingClientRect().bottom + 12}px`;
+  btn.textContent = `${down ? "↓" : "↑"} Last watched episode`;
 }
 
 let jumpFrame = 0;

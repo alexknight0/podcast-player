@@ -145,8 +145,10 @@ button:focus-visible, input:focus-visible, a:focus-visible {
 
 .ep-progress > span { display: block; height: 100%; background: var(--accent); }
 
-/* Played episodes are dimmed */
+/* Played episodes: whole row faded, plus a green "✓ Played" tag */
 .episodes li.done .ep-name { color: var(--muted); font-weight: 500; }
+.episodes li.done button { opacity: 0.6; }
+.played-tag { color: #2da44e; font-weight: 700; }
 
 .mark-done {
   display: block;
@@ -169,6 +171,7 @@ button:focus-visible, input:focus-visible, a:focus-visible {
   margin-top: 20px;
 }
 .player-toggles .mark-done { margin: 0; }
+.mark-done.confirm { color: #f85149; border-color: #f85149; }
 
 /* Player */
 .player { padding: 16px; }

@@ -36,6 +36,7 @@ let resumeAt = null;    // episode-time position to apply once the audio (and ad
 let adsSettled = false; // ad detection finished (or isn't possible) for `current`
 let adsDetected = false; // detection actually ran on `current` (ads, if any, are known and skipped)
 let streamInfo = null;  // { url, tagSize } from the ID3 read, used for ad detection
+let scrollPending = false; // next list render centres the most recently listened-to episode (set when the list is opened)
 
 // ---------- time model ----------
 // The stream served to browsers has ads stitched in, but chapter times, the
@@ -244,8 +245,8 @@ function setShow(key) {
   episodes = cachedEpisodes(key);
   setStatus($("list-status"), episodes.length ? "" : "Loading episodes…", true);
   $("refresh").classList.toggle("spinning", Boolean(inflight[key]));
+  scrollPending = true;
   renderList();
-  window.scrollTo(0, 0);
   loadEpisodes();
 }
 
@@ -265,12 +266,12 @@ function renderList() {
       const len = listDuration(ep);
       const pct = len ? Math.min(100, (pos / len) * 100) : 0;
       let progress = "";
-      if (done) progress = " · ✓ Played";
-      else if (pos > 0) progress = ` · ${fmtDuration(Math.max(0, len - pos))} left`;
-      const meta = `${fmtDate(ep.date)} · ${fmtDuration(len)}${progress}`;
+      if (!done && pos > 0) progress = ` · ${fmtDuration(Math.max(0, len - pos))} left`;
+      const meta = el("span", { className: "ep-meta", textContent: `${fmtDate(ep.date)} · ${fmtDuration(len)}${progress}` });
+      if (done) meta.append(" · ", el("span", { className: "played-tag", textContent: "✓ Played" }));
       const btn = el("button", { type: "button" },
         el("span", { className: "ep-name", textContent: ep.title }),
-        el("span", { className: "ep-meta", textContent: meta }),
+        meta,
       );
       if (pct > 0 && !done) {
         const bar = el("span", { className: "ep-progress" }, el("span"));
@@ -278,9 +279,27 @@ function renderList() {
         btn.append(bar);
       }
       btn.addEventListener("click", () => { location.hash = `ep=${encodeURIComponent(ep.guid)}&show=${ep.show}`; });
-      return el("li", { className: done ? "done" : "" }, btn);
+      const li = el("li", { className: done ? "done" : "" }, btn);
+      li.dataset.guid = ep.guid;
+      return li;
     }),
   );
+  if (scrollPending && episodes.length) {
+    scrollPending = false;
+    scrollToLatest();
+  }
+}
+
+function scrollToLatest() {
+  let latest = null;
+  let latestT = 0;
+  for (const ep of episodes) {
+    const p = Progress.get(ep.guid);
+    if ((p.pos > 0 || p.done) && p.t > latestT) [latest, latestT] = [ep.guid, p.t];
+  }
+  const li = latest && [...$("episodes").children].find((n) => n.dataset.guid === latest);
+  if (li) li.scrollIntoView({ block: "center" });
+  else window.scrollTo(0, 0);
 }
 
 // ---------- player ----------
@@ -316,6 +335,7 @@ function openEpisode(ep) {
   seek.value = 0;
   updateTimes();
   updateDoneButton();
+  resetClearButton();
   updateLoading();
   setBusy(false);
   setupMediaSession();
@@ -682,6 +702,37 @@ $("back").addEventListener("click", () => { location.hash = ""; });
 $("refresh").addEventListener("click", loadEpisodes);
 $("mark-done").addEventListener("click", () => setDone(current.guid, !isDone(current.guid)));
 
+// ---------- clear watch time ----------
+// Resets the episode to unplayed at 0:00. Needs a second tap within 3s, since the
+// saved position can't be got back.
+let clearTimer = null;
+
+function resetClearButton() {
+  clearTimeout(clearTimer);
+  clearTimer = null;
+  $("clear-progress").textContent = "Clear watch time";
+  $("clear-progress").classList.remove("confirm");
+}
+
+$("clear-progress").addEventListener("click", () => {
+  if (!current) return;
+  if (!clearTimer) {
+    $("clear-progress").textContent = "Tap again to clear";
+    $("clear-progress").classList.add("confirm");
+    clearTimer = setTimeout(resetClearButton, 3000);
+    return;
+  }
+  resetClearButton();
+  setDone(current.guid, false);
+  if (resumeAt !== null) {
+    resumeAt = null; // still loading: start from the beginning instead
+    updateTimes();
+  } else if (fileDuration()) {
+    seekTo(toFileTime(0)); // lands after a pre-roll ad, if there is one
+  }
+  Progress.setPos(current.guid, 0);
+});
+
 // ---------- autoplay next (off by default, remembered per device) ----------
 // When an episode ends, open and play the next one in release order (the next
 // newer episode of the same show). Stops after the newest episode.
@@ -799,6 +850,7 @@ async function route() {
   $("player-view").hidden = true;
   $("list-view").hidden = false;
   document.title = SHOWS[show].name;
+  scrollPending = true;
   renderList(); // refresh "listened" progress
 }
 
@@ -809,6 +861,7 @@ const PASSWORD = "alex";
 const UNLOCK_KEY = "unlocked";
 
 function startApp() {
+  history.scrollRestoration = "manual"; // the list scrolls itself to the latest episode; don't let a reload undo it
   document.body.classList.remove("locked");
   window.addEventListener("hashchange", route);
   setShow(show);

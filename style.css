@@ -153,9 +153,8 @@ button:focus-visible, input:focus-visible, a:focus-visible {
 .episodes li.done button { opacity: 0.6; }
 .played-tag { color: #2da44e; font-weight: 700; }
 
-/* The most recently listened-to episode: accent edge + "Last played" label (kept bright even if played) */
-.episodes li.latest button { box-shadow: inset 4px 0 0 var(--accent); opacity: 1; }
-.episodes li.latest .ep-name { color: var(--text); }
+/* The most recently listened-to episode: accent edge + "Last played" label (still faded if played) */
+.episodes li.latest button { box-shadow: inset 4px 0 0 var(--accent); }
 .last-tag {
   display: inline-block;
   margin-right: 2px;

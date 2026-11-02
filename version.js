@@ -1,3 +1,4 @@
-// Set automatically by tools/pre-commit on every commit. update.js compares this (the copy
-// that's running) with the live file on GitHub Pages to show whether an update is available.
-export const VERSION = "2026-11-01T22:09:55Z";
+// Set automatically by the pre-commit hook (~/projects/pages-common) on every commit.
+// update.js compares these with the live file on GitHub Pages to show whether an update is available.
+export const VERSION = "2026-11-02T09:02:49Z";
+export const VERSION_FILES = {"ads.js": "42f64ef1b53f6eebb6f26dba43ea306108abc507ac2191e7e3957f374ccd576a", "app.js": "9715b6ff1ffa588a2a2014192004bad6ad36bf2dd4ff12df2363a89f8ce66be9", "id3.js": "913b88473d4e12266c3c24fedf73d02c5755fc7f0ea515ea12562823a83d7820", "index.html": "1f197887aa5140c1ce9d896717776c3bfb8259c45ee96fe81bd8685aeb92fe3b", "manifest.webmanifest": "034618fa5ca3b9b3e40e9e9557e67acb2c6b993fcd76fe0cda0492ea7d9d3ccf", "progress.js": "59daea4d175b1505f10d8f9e25e50423cb8286983a4d93b857affcb710736557", "style.css": "b18c00c7abb860170b4a0c00cc3a7dcc748a705d5d7884e49ed77e7df5e5bda4", "sync.js": "ca99cbf15e0458c7fb8090787b28d85329326a54cd420c8eef172cde5b8065b5", "update.js": "47aaae8b0beed7f60851d5cc2b54329ab1f8cf4ba82f70df92acfc1c26554ffa"};

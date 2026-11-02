@@ -6,7 +6,7 @@
 // ad map requests alongside as { adRequests: { <guid>: {...} } } (see AdRequests in app.js).
 import { initializeApp } from "https://www.gstatic.com/firebasejs/13.0.0/firebase-app.js";
 import {
-  getAuth, GoogleAuthProvider, onAuthStateChanged, signInWithPopup, signOut,
+  initializeAuth, browserLocalPersistence, browserPopupRedirectResolver, GoogleAuthProvider, onAuthStateChanged, signInWithPopup, signOut,
 } from "https://www.gstatic.com/firebasejs/13.0.0/firebase-auth.js";
 import {
   getFirestore, doc, getDoc, onSnapshot, setDoc,
@@ -24,7 +24,10 @@ const FIREBASE_CONFIG = {
 const APPROVED_KEY = "approvedUid";
 
 const app = initializeApp(FIREBASE_CONFIG);
-const auth = getAuth(app);
+// Sign-in is kept in localStorage, not Firebase's default IndexedDB: all of Alex's sites share
+// one origin and so one sign-in database, and Firebase waits forever if another site's page
+// blocks opening it (seen on Android 2026-11-02: blank page until site data was cleared).
+const auth = initializeAuth(app, { persistence: browserLocalPersistence, popupRedirectResolver: browserPopupRedirectResolver });
 const db = getFirestore(app);
 
 const $ = (id) => document.getElementById(id);

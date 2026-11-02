@@ -15,7 +15,9 @@
        sync.js decides; the app starts once the account is approved. -->
   <section id="gate" class="gate" aria-labelledby="gate-title">
     <h1 id="gate-title">Podcast Player</h1>
-    <p id="gate-msg" class="gate-msg" role="status">Checking sign-in…</p>
+    <p id="gate-msg" class="gate-msg loading" role="status">Checking sign-in…</p>
+    <!-- Appears 10 s into a check by CSS alone, so it works even if Firebase never loads. -->
+    <p id="gate-slow" class="gate-msg gate-slow">This is taking a while. <button type="button" class="secondary" onclick="location.reload()">Reload</button></p>
     <button id="gate-signin" type="button" hidden>Sign in with Google</button>
     <button id="gate-signout" type="button" class="secondary" hidden>Use a different account</button>
   </section>

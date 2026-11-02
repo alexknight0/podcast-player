@@ -37,10 +37,12 @@ let state = { status: "off", message: "" };
 
 // ---------- gate ----------
 
-function showGate(message, { signIn = false, signOut: canSignOut = false, error = false } = {}) {
+function showGate(message, { signIn = false, signOut: canSignOut = false, error = false, loading = false } = {}) {
   document.body.classList.add("locked");
   $("gate-msg").textContent = message;
   $("gate-msg").classList.toggle("error", error);
+  $("gate-msg").classList.toggle("loading", loading);
+  $("gate-slow").hidden = !loading;
   $("gate-signin").hidden = !signIn;
   $("gate-signout").hidden = !canSignOut;
 }
@@ -129,7 +131,7 @@ onAuthStateChanged(auth, async (user) => {
   const ref = doc(db, "users", user.uid);
   const knownGood = localStorage.getItem(APPROVED_KEY) === user.uid;
   if (knownGood) startApp();
-  else showGate(`Checking access for ${user.email}…`);
+  else showGate(`Checking access for ${user.email}…`, { loading: true });
   try {
     await getDoc(ref); // denied unless approved
   } catch (err) {

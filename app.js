@@ -290,7 +290,8 @@ function renderList() {
         btn.append(bar);
       }
       btn.addEventListener("click", () => {
-        // Opening an episode starts playing it, unless something is already playing.
+        // Opening an episode starts playing it if nothing is playing (if something is, route()
+        // shows a preview instead and leaves it playing). Reopening the loaded episode doesn't.
         autoplayOnOpen = audio.paused && !playPending;
         location.hash = `ep=${encodeURIComponent(ep.guid)}&show=${ep.show}`;
       });
@@ -373,10 +374,7 @@ function openEpisode(ep) {
   if (current && current.guid === ep.guid) {
     // Already loaded; keep playing. If it was finished and left at the end, rewind.
     if (audio.paused && isDone(ep.guid) && episodeDuration() - toEpisodeTime(audio.currentTime) <= FINISHED_WITHIN_SECONDS) seekTo(0);
-    if (autoplayOnOpen) {
-      autoplayOnOpen = false;
-      if (audio.paused && !playPending) play();
-    }
+    autoplayOnOpen = false;
     return;
   }
 
@@ -918,6 +916,7 @@ document.addEventListener("visibilitychange", () => { if (document.hidden) saveP
 // episode is paused, jump to its synced position.
 Progress.on("change", () => {
   if (!$("list-view").hidden) renderList();
+  renderPreview();
   if (current) {
     updateDoneButton();
     const pos = getPos(current.guid);
@@ -927,6 +926,55 @@ Progress.on("change", () => {
       updateTimes();
     }
   }
+});
+
+// ---------- preview: an episode opened while another one plays ----------
+
+let previewing = null; // episode shown in #preview (not loaded into <audio>)
+
+function showPreview(ep) {
+  previewing = ep;
+  $("ep-title").textContent = ep.title;
+  document.title = ep.title;
+  $("player-main").hidden = true;
+  $("chapters-section").hidden = true;
+  $("preview").hidden = false;
+  renderPreview();
+}
+
+function renderPreview() {
+  const ep = previewing;
+  if (!ep) return;
+  const pos = getPos(ep.guid);
+  const done = isDone(ep.guid);
+  const dur = listDuration(ep);
+  $("preview-pos").textContent = done
+    ? `✓ Played · ${fmtDuration(dur)}`
+    : pos > 0 ? `${fmtTime(pos)} of ${fmtDuration(dur)} · ${fmtDuration(Math.max(0, dur - pos))} left` : `Not started · ${fmtDuration(dur)}`;
+  $("preview-note").textContent = current ? `${current.title} is still playing. Press play to switch to this episode.` : "";
+  $("preview-done").textContent = done ? "✓ Played — mark as unplayed" : "Mark as played";
+  $("preview-done").setAttribute("aria-pressed", String(done));
+}
+
+function endPreview() {
+  if (!previewing) return;
+  previewing = null;
+  $("preview").hidden = true;
+  $("player-main").hidden = false;
+  if (current) $("chapters-section").hidden = !SHOWS[current.show].chapters;
+}
+
+$("preview-play").addEventListener("click", () => {
+  const ep = previewing;
+  if (!ep) return;
+  endPreview();
+  autoplayOnOpen = true; // queued until it loads, like pressing play while loading
+  openEpisode(ep);
+});
+$("preview-done").addEventListener("click", () => {
+  if (!previewing) return;
+  setDone(previewing.guid, !isDone(previewing.guid));
+  renderPreview();
 });
 
 // ---------- routing (#ep=<guid>&show=<key> shows the player; empty hash shows the list) ----------
@@ -945,10 +993,18 @@ async function route() {
       $("list-view").hidden = true;
       $("player-view").hidden = false;
       window.scrollTo(0, 0);
+      // Something else is playing: show this episode without interrupting it.
+      if (current && current.guid !== ep.guid && (!audio.paused || playPending)) {
+        autoplayOnOpen = false;
+        showPreview(ep);
+        return;
+      }
+      endPreview();
       openEpisode(ep);
       return;
     }
   }
+  endPreview();
   $("player-view").hidden = true;
   $("list-view").hidden = false;
   document.title = SHOWS[show].name;

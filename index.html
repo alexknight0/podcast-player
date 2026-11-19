@@ -47,7 +47,20 @@
       <h1 id="ep-title" class="ep-title"></h1>
     </header>
 
-    <section class="player" aria-label="Player">
+    <!-- Shown instead of the player when another episode is playing: opening an episode
+         doesn't interrupt it; ▶ here switches to this one. -->
+    <section id="preview" class="player preview" aria-label="Episode" hidden>
+      <p id="preview-pos" class="preview-pos"></p>
+      <div class="controls">
+        <button id="preview-play" class="ctrl play" aria-label="Play this episode">▶</button>
+      </div>
+      <p id="preview-note" class="status preview-note"></p>
+      <div class="player-toggles">
+        <button id="preview-done" class="mark-done" type="button" aria-pressed="false">Mark as played</button>
+      </div>
+    </section>
+
+    <section id="player-main" class="player" aria-label="Player">
       <p id="current-chapter" class="current-chapter" aria-live="polite"></p>
 
       <div id="seek-wrap" class="seek">

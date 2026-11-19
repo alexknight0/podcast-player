@@ -218,6 +218,8 @@ button:focus-visible, input:focus-visible, a:focus-visible {
 
 /* Player */
 .player { padding: 16px; }
+.preview-pos { margin: 24px 0 0; text-align: center; font-size: 1.1rem; }
+.preview-note { margin: 16px 0; text-align: center; }
 
 .current-chapter {
   min-height: 1.4em;

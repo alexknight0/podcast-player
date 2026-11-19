@@ -289,7 +289,11 @@ function renderList() {
         bar.firstChild.style.width = `${pct}%`;
         btn.append(bar);
       }
-      btn.addEventListener("click", () => { location.hash = `ep=${encodeURIComponent(ep.guid)}&show=${ep.show}`; });
+      btn.addEventListener("click", () => {
+        // Opening an episode starts playing it, unless something is already playing.
+        autoplayOnOpen = audio.paused && !playPending;
+        location.hash = `ep=${encodeURIComponent(ep.guid)}&show=${ep.show}`;
+      });
       const li = el("li", { className: [done && "done", ep.guid === latest && "latest"].filter(Boolean).join(" ") }, btn);
       li.dataset.guid = ep.guid;
       return li;
@@ -369,6 +373,10 @@ function openEpisode(ep) {
   if (current && current.guid === ep.guid) {
     // Already loaded; keep playing. If it was finished and left at the end, rewind.
     if (audio.paused && isDone(ep.guid) && episodeDuration() - toEpisodeTime(audio.currentTime) <= FINISHED_WITHIN_SECONDS) seekTo(0);
+    if (autoplayOnOpen) {
+      autoplayOnOpen = false;
+      if (audio.paused && !playPending) play();
+    }
     return;
   }
 
@@ -830,7 +838,7 @@ $("clear-progress").addEventListener("click", () => {
 // When an episode ends, open and play the next one in release order (the next
 // newer episode of the same show). Stops after the newest episode.
 let autoplayNext = localStorage.getItem("autoplayNext") === "1";
-let autoplayOnOpen = false; // set just before routing to the next episode
+let autoplayOnOpen = false; // set just before routing to an episode that should start playing (tapped in the list, or autoplay next)
 
 function updateAutoplayButton() {
   $("autoplay").textContent = `Autoplay next: ${autoplayNext ? "On" : "Off"}`;

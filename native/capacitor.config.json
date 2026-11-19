@@ -1,0 +1,17 @@
+{
+  "appId": "io.github.alexknight0.podcastplayer",
+  "appName": "Podcast Player",
+  "webDir": "www",
+  "server": {
+    "url": "https://alexknight0.github.io/podcast-player/",
+    "errorPath": "offline.html"
+  },
+  "android": {
+    "backgroundColor": "#111418"
+  },
+  "plugins": {
+    "MediaSession": {
+      "foregroundService": "duringPlayback"
+    }
+  }
+}

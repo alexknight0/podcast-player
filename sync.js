@@ -6,7 +6,8 @@
 // ad map requests alongside as { adRequests: { <guid>: {...} } } (see AdRequests in app.js).
 import { initializeApp } from "https://www.gstatic.com/firebasejs/13.0.0/firebase-app.js";
 import {
-  initializeAuth, browserLocalPersistence, browserPopupRedirectResolver, GoogleAuthProvider, onAuthStateChanged, signInWithPopup, signOut,
+  initializeAuth, browserLocalPersistence, browserPopupRedirectResolver, GoogleAuthProvider, onAuthStateChanged, signInWithPopup,
+  signInWithCredential, signOut as firebaseSignOut,
 } from "https://www.gstatic.com/firebasejs/13.0.0/firebase-auth.js";
 import {
   getFirestore, doc, getDoc, onSnapshot, setDoc,
@@ -22,6 +23,11 @@ const FIREBASE_CONFIG = {
 // Remembers which account was approved on this device, so the app opens straight away
 // (and offline) while the approval is re-checked in the background.
 const APPROVED_KEY = "approvedUid";
+// Android app (native/): Google refuses to sign in inside a WebView, so the app's native
+// GoogleSignIn plugin gets a Google ID token for this web OAuth client (the one Firebase's
+// Google provider uses) and Firebase signs in with it.
+const NativeGoogle = window.Capacitor?.isNativePlatform?.() ? window.Capacitor.Plugins.GoogleSignIn : null;
+const WEB_CLIENT_ID = "408789063169-0f6u7839225805fgifm6tkfut5fap1iu.apps.googleusercontent.com";
 
 const app = initializeApp(FIREBASE_CONFIG);
 // Sign-in is kept in localStorage, not Firebase's default IndexedDB: all of Alex's sites share
@@ -57,12 +63,23 @@ function notApproved(user) {
 
 async function signIn() {
   try {
-    await signInWithPopup(auth, new GoogleAuthProvider());
+    if (NativeGoogle) {
+      const { idToken } = await NativeGoogle.signIn({ clientId: WEB_CLIENT_ID });
+      await signInWithCredential(auth, GoogleAuthProvider.credential(idToken));
+    } else {
+      await signInWithPopup(auth, new GoogleAuthProvider());
+    }
   } catch (err) {
-    if (err.code !== "auth/popup-closed-by-user" && err.code !== "auth/cancelled-popup-request") {
+    if (err.code !== "auth/popup-closed-by-user" && err.code !== "auth/cancelled-popup-request" && err.code !== "cancelled") {
       showGate(`Couldn't sign in: ${err.message}`, { signIn: true, error: true });
     }
   }
+}
+
+// In the app, also forget the chosen Google account so "Use a different account" can pick another.
+function signOut(a) {
+  NativeGoogle?.signOut().catch(() => {});
+  return firebaseSignOut(a);
 }
 
 $("gate-signin").addEventListener("click", signIn);

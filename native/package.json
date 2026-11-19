@@ -1,0 +1,21 @@
+{
+  "name": "podcast-player-native",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Android app (Capacitor) that wraps the live podcast-player site",
+  "scripts": {
+    "sync": "cap sync android",
+    "build": "cap sync android && cd android && ./gradlew assembleDebug",
+    "install-phone": "cd android && ./gradlew installDebug",
+    "postinstall": "patch-package"
+  },
+  "dependencies": {
+    "@capacitor/android": "^8.6.2",
+    "@capacitor/core": "^8.6.2",
+    "@capgo/capacitor-media-session": "^8.1.11"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^8.6.2",
+    "patch-package": "^8.0.1"
+  }
+}

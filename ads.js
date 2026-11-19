@@ -336,5 +336,205 @@ const Ads = (() => {
     return ads;
   }
 
-  return { detect, detectMapped, prefetchMap, forgetMap };
+  // ---------- comparing copies (Megaphone shows, Android app only) ----------
+  //
+  // Megaphone stitches different ads into the copy each User-Agent gets, but the show audio
+  // is byte-identical in every copy. The Android app can fetch other copies with other
+  // User-Agents (a web page can't set one), so the user's copy is compared with them using
+  // small Range requests, never whole downloads (~1–2 MB per episode):
+  //  1. Scan: every SCAN_SEC, compare a few hundred bytes of the user's copy with each other
+  //     copy at the matching offset. They match while both are in the same show segment.
+  //  2. Where a copy stops matching, search for the exact byte where they diverge (an ad
+  //     starts in one of them).
+  //  3. Realign: past the break the copies differ by an unknown number of bytes (their ad
+  //     lengths differ). Read one contiguous block of the user's copy that must be show
+  //     again, hash its MP3 frames, and read short chunks of the other copy spaced one block
+  //     apart over every possible offset ("baby-step giant-step"): one chunk lands inside
+  //     the block and its frames give the new offset.
+  //  4. With the new offset, search for the first byte where they match again: the end of
+  //     the user's ad (no ad if that's where they diverged, i.e. only the other copy had one).
+  // An ad served identically to every copy at the same spot can't be seen (it looks like show).
+  // Spacing of the coarse comparisons. A break is found if a sample lands in it or if the
+  // copies' ads there differ in length (then the offset after it changes), so only a break
+  // shorter than this with equally long ads in every copy can be missed. Each sample touches
+  // a new part of every copy, and Megaphone takes 0.3–3 s to serve a part for the first time.
+  const SCAN_SEC = 90;
+  const CMP_BYTES = 512;      // bytes compared per probe
+  const MAX_BREAK_SEC = 300;  // longest ad break looked for (also the post-roll limit)
+  const BLOCK = 256 * 1024;   // contiguous block of the user's copy hashed when realigning
+  const CHUNK = 2560;         // other-copy chunk (holds 3+ whole frames at 192 kbps)
+  const WINDOW = 24 * 1024;   // searches stop at this size and read the window whole
+  const SCAN_BATCH = 400;     // coarse comparisons per round: all at once (first reads are slow, see SCAN_SEC)
+  const SEARCH_WAYS = 15;     // probes per round of the k-ary searches
+
+  const sameBytes = (a, b) => a.length === b.length && a.every((x, i) => x === b[i]);
+
+  // Frames in b: [{at, crc}] for every whole frame after the first confirmed header pair.
+  function framesIn(b) {
+    let i = 0;
+    while (i < b.length && !(frameSize(b, i) && frameSize(b, i + frameSize(b, i)))) i++;
+    const out = [];
+    for (let n; (n = frameSize(b, i)) && i + n <= b.length; i += n) out.push({ at: i, crc: crc32(b, i, i + n) });
+    return out;
+  }
+
+  // Smallest p in (lo, hi] with pred(p) true, given pred(lo) false and pred(hi) true. Stops
+  // once the range is under `until` bytes (the caller reads that window whole).
+  async function searchFirst(lo, hi, pred, count, until = 1) {
+    while (hi - lo > until) {
+      const xs = [...new Set(Array.from({ length: SEARCH_WAYS }, (_, i) => Math.floor(lo + ((hi - lo) * (i + 1)) / (SEARCH_WAYS + 1))))]
+        .filter((x) => x > lo && x < hi);
+      if (!xs.length) break;
+      count(xs.length);
+      const rs = await Promise.all(xs.map(pred));
+      const k = rs.indexOf(true);
+      if (k === -1) lo = xs[xs.length - 1];
+      else { hi = xs[k]; if (k > 0) lo = xs[k - 1]; }
+    }
+    return hi;
+  }
+
+  // user / refs: {size, tagSize, read(start, len) => Uint8Array} for the user's copy and other
+  // copies of the same episode. Same contract as detect(): ad ranges in file seconds, [] for
+  // none, or null if the copies can't be lined up.
+  async function detectCompare(userCopy, refs, fileDuration, onProgress = () => {}) {
+    // The same spot of the user's copy is compared with every other copy: read it once.
+    const memo = new Map();
+    const user = {
+      ...userCopy,
+      read(start, len) {
+        const key = `${start}:${len}`;
+        if (!memo.has(key)) memo.set(key, userCopy.read(start, len));
+        return memo.get(key);
+      },
+    };
+    const head = await user.read(user.tagSize, 4096);
+    const first = framesIn(head)[0];
+    if (!first) return null;
+    const bps = (MP3_KBPS[head[first.at + 2] >> 4] * 1000) / 8; // CBR: bytes per second
+    const toSec = (byte) => (byte - user.tagSize) / bps;
+    if (fileDuration == null) fileDuration = toSec(user.size); // not known yet (the app starts before the audio loads)
+    if (Math.abs(toSec(user.size) - fileDuration) > Math.max(5, fileDuration * 0.02)) return null; // not CBR as assumed
+
+    let done = 0;
+    let total = Math.ceil((user.size - user.tagSize) / (SCAN_SEC * bps)) + 60;
+    const count = (n) => { done += n; total = Math.max(total, done + 10); onProgress(done, total); };
+
+    // Other copy r is at user position + offs[r] (they start together after the ID3 tag).
+    let live = refs.map((r, i) => ({ r, i, off: r.tagSize - user.tagSize }));
+    const eq = async (p, ref, off = ref.off, n = CMP_BYTES) => {
+      if (p < user.tagSize || p + n > user.size || p + off < ref.r.tagSize || p + off + n > ref.r.size) return false;
+      const [a, b] = await Promise.all([user.read(p, n), ref.r.read(p + off, n)]);
+      return sameBytes(a, b);
+    };
+
+    // New offset of `ref` after a break that began at user position `div`, plus where the
+    // user's copy is show again. null if no show follows within MAX_BREAK_SEC.
+    async function realign(ref, div) {
+      for (const t of [90, MAX_BREAK_SEC]) {
+        const P = div + Math.floor(t * bps);
+        if (P + BLOCK > user.size) break;
+        const block = await user.read(P, BLOCK);
+        count(1);
+        const seen = new Map();
+        for (const f of framesIn(block)) seen.set(f.crc, seen.has(f.crc) ? -1 : P + f.at); // repeated (e.g. silent) frames: unusable
+        const step = BLOCK - 2 * CHUNK;
+        const qs = [];
+        for (let q = P + ref.off - Math.floor(t * bps); q < P + ref.off + MAX_BREAK_SEC * bps + BLOCK; q += step) {
+          if (q >= ref.r.tagSize && q + CHUNK <= ref.r.size) qs.push(q);
+        }
+        count(qs.length);
+        const chunks = await Promise.all(qs.map((q) => ref.r.read(q, CHUNK)));
+        const votes = new Map(); // offset -> {n, at: first user position matched}
+        chunks.forEach((b, j) => {
+          for (const f of framesIn(b)) {
+            const at = seen.get(f.crc);
+            if (!(at > 0)) continue;
+            const o = qs[j] + f.at - at;
+            const v = votes.get(o) || { n: 0, at };
+            votes.set(o, { n: v.n + 1, at: Math.min(v.at, at) });
+          }
+        });
+        const best = [...votes].filter(([, v]) => v.n >= 2).sort((a, b) => b[1].n - a[1].n)[0];
+        if (!best) continue;
+        const [off, { at: showAt }] = best;
+        // Confirm with a byte comparison just past the block (if the file goes on that far).
+        const check = P + BLOCK;
+        if (check + 2048 <= user.size && check + off + 2048 <= ref.r.size && !(await eq(check, ref, off, 2048))) continue;
+        // showAt is show in both copies; the user's ad ends somewhere in [div, showAt].
+        const hi = await searchFirst(div - 1, showAt, (p) => eq(p, ref, off), count, WINDOW);
+        // The ad ends just after the last differing byte in the window before hi.
+        const from = Math.max(div, hi - WINDOW);
+        const [a, b] = await Promise.all([user.read(from, hi - from), ref.r.read(from + off, hi - from)]);
+        count(1);
+        let i = a.length;
+        while (i > 0 && a[i - 1] === b[i - 1]) i--;
+        return { off, resume: from + i };
+      }
+      return null;
+    }
+
+    const ads = [];
+    let pos = user.tagSize; // all live copies match here (or the user's copy starts with an ad)
+    let atStart = true;
+    while (live.length) {
+      // Next coarse comparisons.
+      const xs = atStart ? [pos] : Array.from({ length: SCAN_BATCH }, (_, i) => pos + Math.floor((i + 1) * SCAN_SEC * bps))
+        .filter((x) => x + CMP_BYTES <= user.size);
+      // Always compare the very end too: a post-roll shorter than SCAN_SEC can fall between samples.
+      const last = user.size - CMP_BYTES;
+      if (!atStart && last > pos && (!xs.length || xs[xs.length - 1] < last) && xs.length < SCAN_BATCH) xs.push(last);
+      if (!xs.length) break;
+      count(xs.length);
+      const rs = await Promise.all(xs.map((x) => Promise.all(live.map((ref) => eq(x, ref)))));
+      const k = rs.findIndex((row) => row.includes(false));
+      if (k === -1) { pos = xs[xs.length - 1]; atStart = false; continue; }
+      const lo = k === 0 ? pos : xs[k - 1];
+      const hi = xs[k];
+      const broken = live.filter((_, j) => !rs[k][j]);
+      // Each diverging copy: exact divergence, then realign.
+      const results = await Promise.all(broken.map(async (ref) => {
+        let div = lo;
+        if (!atStart && (await eq(lo, ref))) {
+          // Last matching window start, then the first differing byte after it.
+          const first = await searchFirst(lo, hi, async (p) => !(await eq(p, ref)), count, WINDOW);
+          const from = Math.max(lo, first - WINDOW);
+          const len = Math.min(first - from + CMP_BYTES, user.size - from, ref.r.size - from - ref.off);
+          const [a, b] = await Promise.all([user.read(from, len), ref.r.read(from + ref.off, len)]);
+          count(1);
+          const i = a.findIndex((x, j) => x !== b[j]);
+          div = from + (i >= 0 ? i : len);
+        }
+        return { ref, div, re: await realign(ref, div) };
+      }));
+      atStart = false;
+      const start = Math.min(...results.map((x) => x.div));
+      const ok = results.filter((x) => x.re);
+      if (!ok.length) {
+        // No show after the break: a post-roll, if it's near the end of the file.
+        if (toSec(user.size) - toSec(start) <= MAX_BREAK_SEC + 10) ads.push({ start: toSec(start), end: toSec(user.size) });
+        else return null;
+        break;
+      }
+      for (const x of ok) x.ref.off = x.re.off;
+      live = live.filter((ref) => !results.some((x) => x.ref === ref && !x.re)); // copies that can't be lined up again
+      const end = Math.max(...ok.map((x) => x.re.resume));
+      if (end - start > 0.3 * bps) ads.push({ start: toSec(start), end: toSec(end) });
+      pos = Math.max(end, lo);
+    }
+
+    // Merge touching/overlapping ranges (an ad break where the copies' ads differ partway).
+    ads.sort((a, b) => a.start - b.start);
+    const merged = [];
+    for (const a of ads) {
+      const last = merged[merged.length - 1];
+      if (last && a.start <= last.end + 0.5) last.end = Math.max(last.end, a.end);
+      else merged.push({ ...a });
+    }
+    const adTime = merged.reduce((t, a) => t + a.end - a.start, 0);
+    if (adTime > fileDuration * 0.5) return null;
+    return merged;
+  }
+
+  return { detect, detectMapped, detectCompare, prefetchMap, forgetMap };
 })();

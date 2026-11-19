@@ -2,9 +2,12 @@
 
 // Shows. H&A comes from the iTunes API (Omny-hosted: ID3 chapters). The Megaphone
 // shows come from their RSS feeds (CORS *, full back catalogue; iTunes caps at 200)
-// and have no chapters. Ads on all three are found with maps precomputed by
-// tools/admap.py (`admaps`; see ads.js); for H&A, ads.js can also detect them from
-// the MP3 frames (`ads`) on recent episodes that don't have a map yet.
+// and have no chapters.
+// Ads, on the website: H&A only, with maps precomputed by tools/admap.py (`admaps`; see
+// ads.js) or detected from the MP3 frames (`ads`) on recent episodes without a map.
+// In the Android app (native/, see native.js): H&A is served without ads (the app's
+// User-Agent gets Omny's ad-free copy; `adFree`), and Megaphone shows are compared
+// with copies fetched under other User-Agents (`compare`; Ads.detectCompare).
 const SHOWS = {
   handa: {
     name: "Hamish & Andy",
@@ -12,12 +15,12 @@ const SHOWS = {
     chapters: true,
     ads: true,
     admaps: true,
+    adFree: true,
   },
-  // `requests`: tapping "AD ?" can ask GitHub Actions to build the episode's ad map (not
-  // H&A: Omny gives GitHub's US runners different ads, see tools/admap.py).
-  lemonade: { name: "Lemonade Stand", rss: "https://feeds.megaphone.fm/VMP5629614579", admaps: true, requests: true },
-  triforce: { name: "Triforce!", rss: "https://feeds.megaphone.fm/NSR9016694791", admaps: true, requests: true },
+  lemonade: { name: "Lemonade Stand", rss: "https://feeds.megaphone.fm/VMP5629614579", compare: true },
+  triforce: { name: "Triforce!", rss: "https://feeds.megaphone.fm/NSR9016694791", compare: true },
 };
+const IN_APP = Boolean(window.NativeApp?.isNative);
 const DEFAULT_SHOW = "handa";
 const SKIP_SECONDS = 10;
 const SAVE_EVERY_SECONDS = 5;
@@ -37,6 +40,8 @@ let chapterAbort = null;
 let resumeAt = null;    // episode-time position to apply once the audio (and ad map) is ready
 let adsSettled = false; // ad detection finished (or isn't possible) for `current`
 let adsDetected = false; // detection actually ran on `current` (ads, if any, are known and skipped)
+let earlyCompare = null; // Promise of NativeApp.compareCopies for `current`, started in loadChapters
+let adFreeCopy = false;  // the app is playing H&A's ad-free copy (nothing to detect)
 let streamInfo = null;  // { url, tagSize } from the ID3 read, used for ad detection
 let scrollPending = false; // next list render centres the most recently listened-to episode (only when the app starts)
 let listY = null;          // list scroll position when an episode was opened, restored on the way back
@@ -373,6 +378,8 @@ function openEpisode(ep) {
   ads = [];
   adsSettled = false;
   adsDetected = false;
+  adFreeCopy = false;
+  earlyCompare = null;
   streamInfo = null;
   loadProgress = 0;
   setLoadProgress(0);
@@ -405,14 +412,19 @@ async function loadChapters(ep) {
   if (chapterAbort) chapterAbort.abort();
   chapterAbort = new AbortController();
   const signal = chapterAbort.signal;
-  // Shows without chapters only need the ID3 tag size (for ad maps) before detectAds.
+  // Shows without chapters only need the ID3 tag size (for comparing copies) before detectAds.
   if (!SHOWS[ep.show].chapters) {
-    if (SHOWS[ep.show].admaps) {
-      Ads.prefetchMap(ep.guid); // in parallel with the redirects below
+    if (SHOWS[ep.show].compare && IN_APP) {
       try {
         const info = await ID3.readTagSize(ep.url, signal);
         if (current !== ep) return;
         streamInfo = { url: info.url, tagSize: info.tagSize };
+        // Start comparing copies now, while the audio loads (detectAds picks the result up).
+        // Not if a result is cached: detectAds checks that it fits this copy once the length is known.
+        if (!localStorage.getItem(`ads:${ep.guid}`)) {
+          earlyCompare = NativeApp.compareCopies(ep, streamInfo, null, signal, adProgress(ep));
+          earlyCompare.catch(() => {}); // handled in detectAds
+        }
         setLoadProgress(LOAD_STAGES.chapters);
       } catch (err) {
         if (err.name === "AbortError") return;
@@ -446,20 +458,33 @@ async function detectAds(ep, signal) {
   if (!fileDuration()) await new Promise((r) => audio.addEventListener("loadedmetadata", r, { once: true }));
   if (current !== ep || signal.aborted) return;
   const cacheKey = `ads:${ep.guid}`;
+  const cfg = SHOWS[ep.show];
   try {
     const cached = JSON.parse(localStorage.getItem(cacheKey) || "null");
     if (cached && Math.abs(cached.fileDuration - fileDuration()) < 0.5) {
       ads = cached.ads;
       adsDetected = true;
-    } else if (streamInfo && (SHOWS[ep.show].ads || SHOWS[ep.show].admaps)) {
-      const onProgress = (done, total) => {
-        if (current === ep) setLoadProgress(LOAD_STAGES.metadata + (1 - LOAD_STAGES.metadata) * (done / total));
-      };
-      let found = SHOWS[ep.show].admaps
+    } else if (IN_APP && cfg.adFree && ep.durationSec && Math.abs(fileDuration() - ep.durationSec) < 3) {
+      // The app gets the ad-free copy: the file is exactly as long as the episode.
+      ads = [];
+      adsDetected = true;
+      adFreeCopy = true;
+    } else if (IN_APP && cfg.compare && streamInfo) {
+      let found = await (earlyCompare || NativeApp.compareCopies(ep, streamInfo, fileDuration(), signal, adProgress(ep)));
+      // Started before the length was known: check it describes this file.
+      if (found && found.length && found[found.length - 1].end > fileDuration() + 2) found = null;
+      if (current !== ep) return;
+      ads = found || [];
+      adsDetected = Boolean(found);
+      if (found) localStorage.setItem(cacheKey, JSON.stringify({ fileDuration: fileDuration(), ads }));
+    } else if (streamInfo && (cfg.ads || cfg.admaps)) {
+      // Website (or the app wasn't given H&A's ad-free copy): find the stitched-in ads.
+      const onProgress = adProgress(ep);
+      let found = cfg.admaps
         ? await Ads.detectMapped(ep.guid, streamInfo.url, streamInfo.tagSize, fileDuration(), signal, onProgress)
         : null;
       // No map (yet), or it doesn't fit this copy: H&A can still detect from the MP3 frames.
-      if (found === null && SHOWS[ep.show].ads && current === ep) {
+      if (found === null && cfg.ads && current === ep) {
         found = await Ads.detect(streamInfo.url, streamInfo.tagSize, fileDuration(), signal, onProgress);
       }
       if (current !== ep) return;
@@ -469,6 +494,7 @@ async function detectAds(ep, signal) {
     }
   } catch (err) {
     if (err.name === "AbortError") return;
+    console.warn("Ad detection failed:", err);
     ads = []; // play on with unadjusted times
   }
   adsSettled = true;
@@ -487,6 +513,11 @@ async function detectAds(ep, signal) {
     play();
   }
 }
+
+// Progress callback for ad detection: its probes fill the rest of the loading ring.
+const adProgress = (ep) => (done, total) => {
+  if (current === ep) setLoadProgress(LOAD_STAGES.metadata + (1 - LOAD_STAGES.metadata) * (done / total));
+};
 
 // Loading progress (0..1) shown in the placeholder ring. Reading chapters and the
 // audio metadata are quick and count for a little; ad detection (one tiny Range
@@ -511,73 +542,24 @@ function updateLoading(failed = false) {
 }
 
 // "AD" badge between the times: whether ad detection has run on this episode.
-// The tooltip shows on hover, or on tap (focus) on phones. On shows with `requests`,
-// tapping "AD ?" while signed in asks for the episode's ad map to be built.
+// The tooltip shows on hover, or on tap (focus) on phones.
 function updateAdBadge() {
   const badge = $("ad-badge");
   const n = ads.length;
-  const req = current && AdRequests.all[current.guid];
-  let state = adsDetected ? "on" : "off";
+  const state = adsDetected ? "on" : "off";
   let text;
-  if (adsDetected) {
+  if (adFreeCopy) {
+    text = "Playing the ad-free copy of this episode.";
+  } else if (adsDetected) {
     text = n ? `Ad detection has run: ${n} ad break${n === 1 ? "" : "s"} skipped.` : "Ad detection has run: no ads found.";
-  } else if (!current || !SHOWS[current.show].requests) {
-    text = "Ad detection hasn't run on this episode. Contact the website owner if you want it run.";
-  } else if (req?.status === "pending") {
-    state = "requested";
-    text = "Ad detection requested. It usually takes 15–30 minutes; ads are skipped as soon as it's done.";
-  } else if (!AdRequests.send) {
-    text = "Ad detection hasn't run on this episode. Requests need a connection to sync (☁ on the episode list); try again shortly.";
-  } else if (req?.status === "failed") {
-    text = `Ad detection failed (${req.error || "unknown error"}). Tap to try again.`;
+  } else if (current && SHOWS[current.show].compare && !IN_APP) {
+    text = "Ads aren't skipped for this show on the website. The Android app skips them.";
   } else {
-    text = "Ad detection hasn't run on this episode. Tap to request it.";
+    text = "Ad detection hasn't run on this episode. Contact the website owner if you want it run.";
   }
   badge.dataset.state = state;
   badge.setAttribute("aria-label", text);
   $("ad-tip").textContent = text;
-}
-
-// Ad map requests, stored with the progress in Firestore (users/{uid}.adRequests) by
-// sync.js; .github/workflows/admap-requests.yml builds them and clears each one.
-const AdRequests = {
-  all: {},    // guid -> {show, title, status: "pending" | "failed", error?, t}
-  send: null, // (ep) => Promise, set by sync.js while signed in
-  // Called by sync.js with the latest requests from Firestore.
-  apply(next) {
-    const prev = this.all;
-    this.all = next;
-    // The current episode's request was just cleared (built): fetch the new map and detect.
-    if (current && prev[current.guid]?.status === "pending" && !next[current.guid]) awaitNewMap(current);
-    updateAdBadge();
-  },
-};
-
-$("ad-badge").addEventListener("click", async () => {
-  if (!current || adsDetected || !SHOWS[current.show].requests || !AdRequests.send) return;
-  if (AdRequests.all[current.guid]?.status === "pending") return;
-  const ep = current;
-  AdRequests.all = { ...AdRequests.all, [ep.guid]: { status: "pending" } };
-  updateAdBadge();
-  try {
-    await AdRequests.send(ep);
-  } catch (err) {
-    AdRequests.all = { ...AdRequests.all, [ep.guid]: { status: "failed", error: `couldn't send the request: ${err.message}` } };
-    updateAdBadge();
-  }
-});
-
-// The map is pushed just before the request is cleared, but GitHub Pages takes about a
-// minute to publish it: retry every 20s for up to 5 minutes, then run detection again.
-async function awaitNewMap(ep) {
-  for (let i = 0; i < 15 && current === ep; i++) {
-    Ads.forgetMap(ep.guid);
-    if (await Ads.prefetchMap(ep.guid)) {
-      if (current === ep && !adsDetected && chapterAbort) detectAds(ep, chapterAbort.signal);
-      return;
-    }
-    await new Promise((r) => setTimeout(r, 20000));
-  }
 }
 
 // Spinner on the play button while audio is buffering.

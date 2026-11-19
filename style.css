@@ -314,8 +314,6 @@ button:focus-visible, input:focus-visible, a:focus-visible {
 .ad-badge[data-state="on"] > span:first-child::after { content: " ✓"; }
 .ad-badge[data-state="off"] { color: var(--muted); border-style: dashed; }
 .ad-badge[data-state="off"] > span:first-child::after { content: " ?"; }
-.ad-badge[data-state="requested"] { color: #d97706; border-style: dashed; }
-.ad-badge[data-state="requested"] > span:first-child::after { content: " …"; }
 
 .ad-tip {
   position: absolute;

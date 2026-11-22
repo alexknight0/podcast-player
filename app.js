@@ -17,7 +17,6 @@ const SHOWS = {
     admaps: true,
     adFree: true,
   },
-  lemonade: { name: "Lemonade Stand", rss: "https://feeds.megaphone.fm/VMP5629614579", compare: true },
   triforce: { name: "Triforce!", rss: "https://feeds.megaphone.fm/NSR9016694791", compare: true },
 };
 const IN_APP = Boolean(window.NativeApp?.isNative);

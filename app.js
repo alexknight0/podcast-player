@@ -6,8 +6,8 @@
 // Ads, on the website: H&A only, with maps precomputed by tools/admap.py (`admaps`; see
 // ads.js) or detected from the MP3 frames (`ads`) on recent episodes without a map.
 // In the Android app (native/, see native.js): H&A is served without ads (the app's
-// User-Agent gets Omny's ad-free copy; `adFree`), and Megaphone shows are compared
-// with copies fetched under other User-Agents (`compare`; Ads.detectCompare).
+// User-Agent gets Omny's ad-free copy; `adFree`). Triforce skips its pre-roll ad by
+// listening for the show's theme song, which starts right after it (`intro`; intro.js).
 const SHOWS = {
   handa: {
     name: "Hamish & Andy",
@@ -17,11 +17,12 @@ const SHOWS = {
     admaps: true,
     adFree: true,
   },
-  triforce: { name: "Triforce!", rss: "https://feeds.megaphone.fm/NSR9016694791", compare: true },
+  triforce: { name: "Triforce!", rss: "https://feeds.megaphone.fm/NSR9016694791", intro: "triforce" },
 };
 const IN_APP = Boolean(window.NativeApp?.isNative);
 const DEFAULT_SHOW = "handa";
 const SKIP_SECONDS = 10;
+const MIN_PREROLL_SECONDS = 10; // a theme song found earlier than this has no ad before it
 const SAVE_EVERY_SECONDS = 5;
 
 const $ = (id) => document.getElementById(id);
@@ -39,7 +40,7 @@ let chapterAbort = null;
 let resumeAt = null;    // episode-time position to apply once the audio (and ad map) is ready
 let adsSettled = false; // ad detection finished (or isn't possible) for `current`
 let adsDetected = false; // detection actually ran on `current` (ads, if any, are known and skipped)
-let earlyCompare = null; // Promise of NativeApp.compareCopies for `current`, started in loadChapters
+let earlyIntro = null;   // Promise of Intro.find for `current`, started in loadChapters
 let adFreeCopy = false;  // the app is playing H&A's ad-free copy (nothing to detect)
 let streamReady = null; // Promise that settles once streamInfo is known (chapters shows)
 let streamInfo = null;  // { url, tagSize } from the ID3 read, used for ad detection
@@ -385,7 +386,7 @@ function openEpisode(ep) {
   adsSettled = false;
   adsDetected = false;
   adFreeCopy = false;
-  earlyCompare = null;
+  earlyIntro = null;
   streamInfo = null;
   streamReady = null;
   loadProgress = 0;
@@ -420,24 +421,15 @@ async function loadChapters(ep) {
   if (chapterAbort) chapterAbort.abort();
   chapterAbort = new AbortController();
   const signal = chapterAbort.signal;
-  // Shows without chapters only need the ID3 tag size (for comparing copies) before detectAds.
+  // Shows without chapters: listen for the theme song while the audio loads (detectAds picks
+  // the result up). Not if a result is cached: detectAds checks it fits this copy.
   if (!SHOWS[ep.show].chapters) {
-    if (SHOWS[ep.show].compare && IN_APP) {
-      try {
-        const info = await ID3.readTagSize(ep.url, signal);
-        if (current !== ep) return;
-        streamInfo = { url: info.url, tagSize: info.tagSize };
-        // Start comparing copies now, while the audio loads (detectAds picks the result up).
-        // Not if a result is cached: detectAds checks that it fits this copy once the length is known.
-        if (!localStorage.getItem(`ads:${ep.guid}`)) {
-          earlyCompare = NativeApp.compareCopies(ep, streamInfo, null, signal, adProgress(ep));
-          earlyCompare.catch(() => {}); // handled in detectAds
-        }
-        setLoadProgress(LOAD_STAGES.chapters);
-      } catch (err) {
-        if (err.name === "AbortError") return;
-      }
+    const name = SHOWS[ep.show].intro;
+    if (name && !localStorage.getItem(`ads:${ep.guid}`)) {
+      earlyIntro = Intro.find(ep.url, name, signal);
+      earlyIntro.catch(() => {}); // handled in detectAds
     }
+    setLoadProgress(LOAD_STAGES.chapters);
     return detectAds(ep, signal);
   }
   if (SHOWS[ep.show].admaps) Ads.prefetchMap(ep.guid);
@@ -512,12 +504,11 @@ async function detectAds(ep, signal) {
       ads = [];
       adsDetected = true;
       adFreeCopy = true;
-    } else if (IN_APP && cfg.compare && streamInfo) {
-      let found = await (earlyCompare || NativeApp.compareCopies(ep, streamInfo, fileDuration(), signal, adProgress(ep)));
-      // Started before the length was known: check it describes this file.
-      if (found && found.length && found[found.length - 1].end > fileDuration() + 2) found = null;
+    } else if (cfg.intro) {
+      // The theme song starts right after the pre-roll ad: skip to it.
+      const found = await (earlyIntro || Intro.find(ep.url, cfg.intro, signal));
       if (current !== ep) return;
-      ads = found || [];
+      ads = found && found.time > MIN_PREROLL_SECONDS ? [{ start: 0, end: found.time }] : [];
       adsDetected = Boolean(found);
       if (found) localStorage.setItem(cacheKey, JSON.stringify({ fileDuration: fileDuration(), ads }));
     } else if ((cfg.ads || cfg.admaps) && (await streamReady, current === ep && !signal.aborted) && streamInfo) {
@@ -595,9 +586,11 @@ function updateAdBadge() {
   if (adFreeCopy) {
     text = "Playing the ad-free copy of this episode.";
   } else if (adsDetected) {
-    text = n ? `Ad detection has run: ${n} ad break${n === 1 ? "" : "s"} skipped.` : "Ad detection has run: no ads found.";
-  } else if (current && SHOWS[current.show].compare && !IN_APP) {
-    text = "Ads aren't skipped for this show on the website. The Android app skips them.";
+    text = current && SHOWS[current.show].intro
+      ? (n ? "Skipped the ad before the show's theme song. Later ads aren't skipped." : "No ad before the show's theme song.")
+      : n ? `Ad detection has run: ${n} ad break${n === 1 ? "" : "s"} skipped.` : "Ad detection has run: no ads found.";
+  } else if (current && SHOWS[current.show].intro) {
+    text = "Couldn't find the show's theme song, so no ad was skipped.";
   } else {
     text = "Ad detection hasn't run on this episode. Contact the website owner if you want it run.";
   }

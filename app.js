@@ -7,7 +7,8 @@
 // ads.js) or detected from the MP3 frames (`ads`) on recent episodes without a map.
 // In the Android app (native/, see native.js): H&A is served without ads (the app's
 // User-Agent gets Omny's ad-free copy; `adFree`). Triforce skips its pre-roll ad by
-// listening for the show's theme song, which starts right after it (`intro`; intro.js).
+// listening for the show's theme song, which starts right after it (`intro`; intro.js), and
+// skips the song too (`introSeconds` long).
 const SHOWS = {
   handa: {
     name: "Hamish & Andy",
@@ -17,7 +18,7 @@ const SHOWS = {
     admaps: true,
     adFree: true,
   },
-  triforce: { name: "Triforce!", rss: "https://feeds.megaphone.fm/NSR9016694791", intro: "triforce" },
+  triforce: { name: "Triforce!", rss: "https://feeds.megaphone.fm/NSR9016694791", intro: "triforce", introSeconds: 8.9 },
 };
 const IN_APP = Boolean(window.NativeApp?.isNative);
 const DEFAULT_SHOW = "handa";
@@ -505,10 +506,12 @@ async function detectAds(ep, signal) {
       adsDetected = true;
       adFreeCopy = true;
     } else if (cfg.intro) {
-      // The theme song starts right after the pre-roll ad: skip to it.
+      // The theme song starts right after the pre-roll ad: skip the ad and the song.
       const found = await (earlyIntro || Intro.find(ep.url, cfg.intro, signal));
       if (current !== ep) return;
-      ads = found && found.time > MIN_PREROLL_SECONDS ? [{ start: 0, end: found.time }] : [];
+      // Song early in the file: no ad before it, so skip just the song.
+      const from = found && found.time > MIN_PREROLL_SECONDS ? 0 : found?.time;
+      ads = found ? [{ start: from, end: found.time + cfg.introSeconds }] : [];
       adsDetected = Boolean(found);
       if (found) localStorage.setItem(cacheKey, JSON.stringify({ fileDuration: fileDuration(), ads }));
     } else if ((cfg.ads || cfg.admaps) && (await streamReady, current === ep && !signal.aborted) && streamInfo) {
@@ -587,10 +590,10 @@ function updateAdBadge() {
     text = "Playing the ad-free copy of this episode.";
   } else if (adsDetected) {
     text = current && SHOWS[current.show].intro
-      ? (n ? "Skipped the ad before the show's theme song. Later ads aren't skipped." : "No ad before the show's theme song.")
+      ? "Skipped the ad and theme song at the start. Later ads aren't skipped."
       : n ? `Ad detection has run: ${n} ad break${n === 1 ? "" : "s"} skipped.` : "Ad detection has run: no ads found.";
   } else if (current && SHOWS[current.show].intro) {
-    text = "Couldn't find the show's theme song, so no ad was skipped.";
+    text = "Couldn't find the show's theme song, so nothing was skipped.";
   } else {
     text = "Ad detection hasn't run on this episode. Contact the website owner if you want it run.";
   }

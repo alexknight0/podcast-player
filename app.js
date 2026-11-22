@@ -43,6 +43,7 @@ let adsSettled = false; // ad detection finished (or isn't possible) for `curren
 let adsDetected = false; // detection actually ran on `current` (ads, if any, are known and skipped)
 let earlyIntro = null;   // Promise of Intro.find for `current`, started in loadChapters
 let adFreeCopy = false;  // the app is playing H&A's ad-free copy (nothing to detect)
+let earlyStart = null; // {ep: episode-time target, file: file time it started from} while ads are unknown
 let streamReady = null; // Promise that settles once streamInfo is known (chapters shows)
 let streamInfo = null;  // { url, tagSize } from the ID3 read, used for ad detection
 let scrollPending = false; // next list render centres the most recently listened-to episode (only when the app starts)
@@ -401,6 +402,7 @@ function openEpisode(ep) {
   // Start ~2s before where we left off, for context. Applied once the audio and ad map are ready.
   resumeAt = resume > 0 ? Math.max(0, resume - 2) : null;
   playPending = false;
+  earlyStart = null;
   audio.muted = false;
   seek.max = 0;
   seek.value = 0;
@@ -539,6 +541,7 @@ async function detectAds(ep, signal) {
   updateAdBadge();
   setLoadProgress(1);
   rememberDuration(ep.guid, episodeDuration());
+  finishEarlyStart();
   applyResume();
   renderTrack();
   syncUi();
@@ -918,6 +921,7 @@ seek.addEventListener("change", () => {
 });
 
 audio.addEventListener("loadedmetadata", () => {
+  startEarly();
   renderTrack();
   applyResume();
   syncUi();
@@ -964,7 +968,40 @@ document.addEventListener("keydown", (e) => {
 });
 
 window.addEventListener("pagehide", savePos);
-document.addEventListener("visibilitychange", () => { if (document.hidden) savePos(); });
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) return;
+  savePos();
+  if (playPending) startPendingInBackground();
+});
+
+// The app went to the background (minimised, screen locked) while a play was queued.
+// Android pauses muted audio in a background app, so play for real now from the resume
+// point, without waiting for the ad map. detectAds corrects the position once it's known
+// (earlyStart), and skips an ad if playback is in one.
+function startPendingInBackground() {
+  playPending = false;
+  audio.muted = false;
+  earlyStart = { ep: resumeAt ?? 0, file: null };
+  if (fileDuration()) startEarly();
+  // else: loadedmetadata calls startEarly()
+}
+function startEarly() {
+  if (!earlyStart || earlyStart.file !== null) return;
+  if (resumeAt !== null) {
+    audio.currentTime = toFileTime(resumeAt);
+    resumeAt = null;
+  }
+  earlyStart.file = audio.currentTime;
+  syncUi();
+}
+// Called when the ad map is known: move to where playback would be had it been known at the start.
+function finishEarlyStart() {
+  const e = earlyStart;
+  earlyStart = null;
+  if (!e || e.file === null || !ads.length) return;
+  const played = Math.max(0, audio.currentTime - e.file);
+  audio.currentTime = toFileTime(e.ep + played);
+}
 
 // ---------- sync (wired up in sync.js) ----------
 

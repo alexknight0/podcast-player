@@ -42,6 +42,7 @@ let adsSettled = false; // ad detection finished (or isn't possible) for `curren
 let adsDetected = false; // detection actually ran on `current` (ads, if any, are known and skipped)
 let earlyCompare = null; // Promise of NativeApp.compareCopies for `current`, started in loadChapters
 let adFreeCopy = false;  // the app is playing H&A's ad-free copy (nothing to detect)
+let streamReady = null; // Promise that settles once streamInfo is known (chapters shows)
 let streamInfo = null;  // { url, tagSize } from the ID3 read, used for ad detection
 let scrollPending = false; // next list render centres the most recently listened-to episode (only when the app starts)
 let listY = null;          // list scroll position when an episode was opened, restored on the way back
@@ -387,6 +388,7 @@ function openEpisode(ep) {
   adFreeCopy = false;
   earlyCompare = null;
   streamInfo = null;
+  streamReady = null;
   loadProgress = 0;
   setLoadProgress(0);
   renderChapters();
@@ -398,6 +400,7 @@ function openEpisode(ep) {
   // Start ~2s before where we left off, for context. Applied once the audio and ad map are ready.
   resumeAt = resume > 0 ? Math.max(0, resume - 2) : null;
   playPending = false;
+  audio.muted = false;
   seek.max = 0;
   seek.value = 0;
   updateTimes();
@@ -438,17 +441,33 @@ async function loadChapters(ep) {
     }
     return detectAds(ep, signal);
   }
-  setStatus($("chapter-status"), "Loading chapters…", true);
   if (SHOWS[ep.show].admaps) Ads.prefetchMap(ep.guid);
+  // The ID3 read follows several redirects, so chapters from the last visit are shown
+  // straight away and detectAds doesn't wait for it (only ad detection that needs the
+  // stream URL does, via streamReady).
+  const infoPromise = ID3.readChapters(ep.url, signal);
+  streamReady = infoPromise.then(
+    (info) => { if (current === ep) streamInfo = { url: info.url, tagSize: info.tagSize }; },
+    () => {},
+  );
+  const cachedChapters = readCachedChapters(ep.guid);
+  if (cachedChapters) {
+    chapters = cachedChapters;
+    setStatus($("chapter-status"), chapters.length ? "" : "No chapters in this episode.");
+    setLoadProgress(LOAD_STAGES.chapters);
+    renderChapters();
+    infoPromise.then((info) => {
+      if (current === ep) cacheChapters(ep, info.chapters);
+    }, () => {});
+    return detectAds(ep, signal);
+  }
+  setStatus($("chapter-status"), "Loading chapters…", true);
   try {
-    const info = await ID3.readChapters(ep.url, signal);
+    const info = await infoPromise;
     if (current !== ep) return;
     streamInfo = { url: info.url, tagSize: info.tagSize };
-    // The first chapter on these episodes is the intro jingle, titled with the episode name.
-    chapters = info.chapters.map((c, i) => ({
-      ...c,
-      title: i === 0 && (c.title === ep.title || !c.title) ? "Intro" : c.title || `Chapter ${i + 1}`,
-    }));
+    chapters = nameChapters(ep, info.chapters);
+    cacheChapters(ep, info.chapters);
     setStatus($("chapter-status"), chapters.length ? "" : "No chapters in this episode.");
     setLoadProgress(LOAD_STAGES.chapters);
   } catch (err) {
@@ -457,6 +476,25 @@ async function loadChapters(ep) {
   }
   renderChapters();
   detectAds(ep, signal);
+}
+
+// The first chapter on these episodes is the intro jingle, titled with the episode name.
+function nameChapters(ep, list) {
+  return list.map((c, i) => ({
+    ...c,
+    title: i === 0 && (c.title === ep.title || !c.title) ? "Intro" : c.title || `Chapter ${i + 1}`,
+  }));
+}
+
+function readCachedChapters(guid) {
+  try {
+    const raw = JSON.parse(localStorage.getItem(`chapters:${guid}`) || "null");
+    return raw && current ? nameChapters(current, raw) : null;
+  } catch { return null; }
+}
+
+function cacheChapters(ep, list) {
+  try { localStorage.setItem(`chapters:${ep.guid}`, JSON.stringify(list)); } catch { /* storage full */ }
 }
 
 // Locate stitched-in ads so chapter markers and times line up (see ads.js).
@@ -483,7 +521,7 @@ async function detectAds(ep, signal) {
       ads = found || [];
       adsDetected = Boolean(found);
       if (found) localStorage.setItem(cacheKey, JSON.stringify({ fileDuration: fileDuration(), ads }));
-    } else if (streamInfo && (cfg.ads || cfg.admaps)) {
+    } else if ((cfg.ads || cfg.admaps) && (await streamReady, current === ep && !signal.aborted) && streamInfo) {
       // Website (or the app wasn't given H&A's ad-free copy): find the stitched-in ads.
       const onProgress = adProgress(ep);
       let found = cfg.admaps
@@ -503,6 +541,7 @@ async function detectAds(ep, signal) {
     console.warn("Ad detection failed:", err);
     ads = []; // play on with unadjusted times
   }
+  if (current !== ep) return;
   adsSettled = true;
   updateAdBadge();
   setLoadProgress(1);
@@ -542,7 +581,7 @@ function setLoadProgress(p) {
 function updateLoading(failed = false) {
   if (current && fileDuration()) setLoadProgress(LOAD_STAGES.metadata);
   const loading = Boolean(current) && !failed && !(fileDuration() && adsSettled);
-  if (failed && playPending) { playPending = false; setBusy(false); }
+  if (failed && playPending) cancelPendingPlay();
   $("seek-wrap").classList.toggle("loading", loading);
   $("seek-wrap").setAttribute("aria-busy", String(loading));
 }
@@ -752,7 +791,7 @@ function setupMediaSession() {
   updateMediaMetadata();
   const handlers = {
     play: () => play(),
-    pause: () => (playPending ? togglePlay() : audio.pause()),
+    pause: () => (playPending ? cancelPendingPlay() : audio.pause()),
     seekbackward: (e) => skipBy(-(e.seekOffset || SKIP_SECONDS)),
     seekforward: (e) => skipBy(e.seekOffset || SKIP_SECONDS),
     seekto: (e) => seekTo(e.seekTime),
@@ -779,17 +818,30 @@ function play() {
   if (stillLoading()) {
     playPending = true;
     setBusy(true);
-    return Promise.resolve();
+    // Start the audio now, muted, so the browser counts it as playing: it keeps playing
+    // (and the app's media session and foreground service stay alive) if the screen is
+    // locked or the app minimised before loading ends. Unmuted from the resume point
+    // when loading finishes (end of detectAds).
+    audio.muted = true;
+    return audio.play().catch(() => {});
   }
+  audio.muted = false;
   applyResume(true);
   if (audio.readyState < 3) setBusy(true);
   return audio.play().catch(() => setBusy(false));
 }
 
+// Drop a queued play (see play()): stop the muted audio and unmute.
+function cancelPendingPlay() {
+  playPending = false;
+  audio.pause();
+  audio.muted = false;
+  setBusy(false);
+}
+
 function togglePlay() {
   if (playPending) {
-    playPending = false;
-    setBusy(false);
+    cancelPendingPlay();
   } else if (audio.paused) play();
   else audio.pause();
 }
@@ -883,9 +935,18 @@ audio.addEventListener("timeupdate", () => {
   if (Math.abs(audio.currentTime - lastSaved) >= SAVE_EVERY_SECONDS) savePos();
 });
 audio.addEventListener("play", () => { updatePlayButton(); updatePositionState(); });
-audio.addEventListener("pause", () => { setBusy(false); updatePlayButton(); savePos(); });
+audio.addEventListener("pause", () => {
+  // Paused from outside (headset button, notification) while a play was queued: cancel it.
+  if (playPending) { playPending = false; audio.muted = false; }
+  setBusy(false);
+  updatePlayButton();
+  savePos();
+});
+// Headphones unplugged or Bluetooth (AirPods) disconnected; the Android app forwards
+// ACTION_AUDIO_BECOMING_NOISY as this window event.
+window.addEventListener("becomingnoisy", () => { if (playPending) cancelPendingPlay(); else audio.pause(); });
 audio.addEventListener("waiting", () => { if (!audio.paused) setBusy(true); });
-audio.addEventListener("playing", () => setBusy(false));
+audio.addEventListener("playing", () => setBusy(playPending));
 audio.addEventListener("ended", () => {
   setBusy(false);
   updatePlayButton();

@@ -294,8 +294,10 @@ function renderList() {
       }
       btn.addEventListener("click", () => {
         // Opening an episode starts playing it if nothing is playing (if something is, route()
-        // shows a preview instead and leaves it playing). Reopening the loaded episode doesn't.
-        autoplayOnOpen = audio.paused && !playPending;
+        // shows a preview instead and leaves it playing) and it isn't marked as played.
+        // Reopening the loaded episode doesn't. This is the only place an opened episode
+        // autoplays (besides "Autoplay next"); reloads and #ep= links never do.
+        autoplayOnOpen = audio.paused && !playPending && !isDone(ep.guid);
         location.hash = `ep=${encodeURIComponent(ep.guid)}&show=${ep.show}`;
       });
       const li = el("li", { className: [done && "done", ep.guid === latest && "latest"].filter(Boolean).join(" ") }, btn);

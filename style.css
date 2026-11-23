@@ -191,6 +191,25 @@ button:focus-visible, input:focus-visible, a:focus-visible {
   white-space: nowrap;
   box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5);
 }
+/* Floating back button at the bottom of the player (the header ← is hard to reach) */
+.back-bottom {
+  position: fixed;
+  left: 50%;
+  bottom: calc(20px + env(safe-area-inset-bottom));
+  transform: translateX(-50%);
+  z-index: 2;
+  min-height: 48px;
+  padding: 0 22px;
+  border-radius: 24px;
+  background: var(--panel);
+  border: 1px solid #2c333d;
+  font-weight: 700;
+  white-space: nowrap;
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.5);
+}
+/* Room to scroll the last chapter clear of it */
+#player-view { padding-bottom: calc(88px + env(safe-area-inset-bottom)); }
+
 .jump-latest.up { bottom: auto; } /* `top` is set from the header's height in app.js */
 
 .mark-done {

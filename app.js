@@ -848,6 +848,7 @@ $("play").addEventListener("click", togglePlay);
 $("back10").addEventListener("click", () => { applyResume(true); skipBy(-SKIP_SECONDS); });
 $("fwd10").addEventListener("click", () => { applyResume(true); skipBy(SKIP_SECONDS); });
 $("back").addEventListener("click", () => { location.hash = ""; });
+$("back-bottom").addEventListener("click", () => $("back").click());
 $("refresh").addEventListener("click", loadEpisodes);
 $("mark-done").addEventListener("click", () => setDone(current.guid, !isDone(current.guid)));
 

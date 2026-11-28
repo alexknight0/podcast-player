@@ -823,7 +823,11 @@ function play() {
     // locked or the app minimised before loading ends. Unmuted from the resume point
     // when loading finishes (end of detectAds).
     audio.muted = true;
-    return audio.play().catch(() => {});
+    const started = audio.play().catch(() => {});
+    // Already in the background (e.g. "Autoplay next" while the screen is locked): no
+    // visibilitychange will come, and Android pauses muted background audio, so play for real now.
+    if (document.hidden) startPendingInBackground();
+    return started;
   }
   audio.muted = false;
   applyResume(true);
